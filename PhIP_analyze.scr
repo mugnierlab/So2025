@@ -1,0 +1,42 @@
+#!/bin/bash -l
+#SBATCH --job-name=“PhIP_analyze”
+#SBATCH --time=48:0:0
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=48
+#SBATCH --partition=shared
+#SBATCH --mail-type=end
+#SBATCH --mail-user=jso4@jhu.edu
+#SBATCH --export=ALL
+#SBATCH --account=mmugnie1
+
+# load modules
+ml anaconda
+ml fastqc
+conda activate PhIPseq
+
+# uncompress and quality check raw seq files
+gunzip *.gz
+mkdir fastqc_out
+
+fastqc --adapters fastQC_adapters.txt -o fastqc_out *.fastq
+
+multiqc fastqc_out/*_fastqc.zip
+
+# single-end, truncated inserts may have the read2 primer F sequence w/in the read. this will give us stats on the abundance of severely truncated inserts
+# keep only reads that are 100bp long
+trim_galore -a AAGCTTGCGGCCGCACTCGAGTAACTAGTT --length 100 --stringency 5 --dont_gzip --output_dir Trimmed_Files *.fastq
+
+# bowtie will report reads suppressed due to multimapping in btSE.txt
+for SEQ in Trimmed_Files/*.fq
+do
+  (bowtie -v 3 -m 1 -p 6 -S VSGfirst100bp $SEQ $SEQ.sam) 2> $SEQ.btSE.txt
+  samtools view -b $SEQ.sam | samtools sort -o $SEQ.sorted.bam
+done
+
+# HTSeq counts alignments to features in GFF specified as VSG_reference
+for ALIGN in Trimmed_Files/*.sorted.bam
+do
+  htseq-count -f bam -t VSG_reference -a 0 --additional-attr=ID $ALIGN All_VSG_tile_first100bp_htseq.gff > $ALIGN.htseq.txt
+done
+
+conda deactivate
