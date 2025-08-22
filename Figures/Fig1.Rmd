@@ -1,0 +1,222 @@
+---
+title: "Figure 1"
+author: "Jaime So"
+date: "2025-07-30"
+mail: "jso4@jhmi.edu"
+github: "JSoSci"
+output:
+  html_document:
+    css: ~/rmarkdown_formatting/style.css
+    includes:
+      after_body: ~/rmarkdown_formatting/JSo_Footer.html
+    number_sections: False
+    theme: flatly
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    fig_caption: True
+    df_print: kable
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(tidyverse)
+#devtools::install_github("wilkox/treemapify")
+library(treemapify)
+library(ggplot2); theme_set(theme_bw()); theme_update(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+<br><br><br><br>
+
+# Figure 1: Library Design and PhIP-Seq Methodology. 
+***
+
+The Pan-VSG phage display library contains 90AA peptide tiles that overlap by 45 AA and includes sequence from 12,108 VSG genes and pseudogenes. 300-mer DNA oligos encoding each peptide synthesized and cloned into T7 phage display vector. Library is incubated with serum and bound phages immunocaptured using protein A/G coated magnetic beads then sequenced.
+
+# B {.tabset .tabset-fade .tabset-pills}
+***
+
+## Load Data
+```{r}
+# Simplify output so all A1 subtypes are just A1 so plot isn't too busy
+VSG_info <- read_csv("FigureData/VSG_Tile_Classification.csv") %>% 
+  mutate(VSG_class = case_when(nterm_typesubtype == "1a" ~ "A1",
+                               nterm_typesubtype == "1b" ~ "A1",
+                               nterm_typesubtype == "1c" ~ "A1",
+                               HMM_profile == "VSG-N-TypeB" | nterm_typesubtype == "B1" ~ "B",
+                               TRUE ~ .$nterm_typesubtype))
+
+# VSG species and strain of origin info
+VSG_accession <- read_csv("FigureData/Library_VSG_reference.csv")
+
+```
+
+## Library
+```{r}
+# Plotting TreeMap Graph 
+VSG_accession %>% group_by(Species) %>% summarise(n = n()) %>%
+  ggplot(aes(area=n,fill=Species,label=Species))+ 
+  treemapify::geom_treemap(layout="squarified")+ 
+  #geom_treemap_text(place = "centre",size = 16)+ 
+  scale_fill_manual(values = c("#cc3333", "#6224aa", "#009999", "#3150af"))+
+  labs(title="Composition of Pan-VSG Phage Display Library")
+
+# merge with typing data to add these to plot breakdown
+strain_info <- left_join(VSG_info %>% select(pro_id, VSG_class) %>% distinct(), VSG_accession, by = c("pro_id"= "GB_Accession/TriTrypDB"))
+VSG_accession %>% group_by(Species) %>% summarise(n = n())
+```
+
+## brucei
+```{r}
+tb_type <- strain_info %>% filter(Species == "Trypanosoma brucei brucei") %>% group_by(VSG_class) %>% summarise(n = n()) 
+tb_type$VSG_class <- replace(tb_type$VSG_class, (tb_type$VSG_class == "Indeterminate"), values = c("None"))
+
+tb_type %>%
+  ggplot(aes(area=n,fill=VSG_class,label=VSG_class))+ 
+  treemapify::geom_treemap(layout="squarified")+ 
+  geom_treemap_text(place = "centre",size = 16, color = "white")+ 
+  scale_fill_manual(values = c("#993333", "#ff6666", "#cc3333", "#ff9999"))+
+  theme(legend.position = "none")+
+  labs(title="Composition of tbb Tiles")
+tb_type
+```
+
+## gambiense
+```{r}
+tbg_type <- strain_info %>% filter(Species == "Trypanosoma brucei gambiense") %>% group_by(VSG_class) %>% summarise(n = n()) 
+tbg_type$VSG_class <- replace(tbg_type$VSG_class, tbg_type$VSG_class == "Indeterminate", values = c("None"))
+
+tbg_type %>%
+  ggplot(aes(area=n,fill=VSG_class,label=VSG_class))+ 
+  treemapify::geom_treemap(layout="squarified")+ 
+  geom_treemap_text(place = "centre",size = 16, color = "white")+ 
+  scale_fill_manual(values = c("#422472", "#9862cc", "#6224aa", "#c195ef"))+
+  theme(legend.position = "none")+
+  labs(title="Composition of tbg Tiles")
+tbg_type
+```
+
+## evansi
+```{r}
+tbe_type <- strain_info %>% filter(Species == "Trypanosoma evansi") %>% group_by(VSG_class) %>% summarise(n = n()) 
+tbe_type$VSG_class <- replace(tbe_type$VSG_class, tbe_type$VSG_class == "Indeterminate", values = c("None"))
+
+tbe_type %>%
+  ggplot(aes(area=n,fill=VSG_class,label=VSG_class))+ 
+  treemapify::geom_treemap(layout="squarified")+ 
+  geom_treemap_text(place = "centre",size = 16, color = "white")+ 
+  scale_fill_manual(values = c("#333399", "#6699cc", "#3150af", "#99ccff"))+
+  theme(legend.position = "none")+
+  labs(title="Composition of tbe Tiles")
+tbe_type
+```
+
+## rhodesiense
+```{r}
+tbr_type <- strain_info %>% filter(Species == "Trypanosoma brucei rhodesiense") %>% group_by(VSG_class) %>% summarise(n = n()) 
+tbr_type$VSG_class <- replace(tbr_type$VSG_class, tbr_type$VSG_class == "Indeterminate", values = c("None"))
+
+tbr_type %>%
+  ggplot(aes(area=n,fill=VSG_class,label=VSG_class))+ 
+  treemapify::geom_treemap(layout="squarified")+ 
+  geom_treemap_text(place = "centre",size = 16, color = "white")+ 
+  scale_fill_manual(values = c("#61bcb5", "#009999", "#006666", "#99cccc"))+
+  theme(legend.position = "none")+
+  labs(title="Composition of tbr Tiles")
+tbr_type
+```
+
+# C
+***
+```{r, eval=FALSE}
+# perform preliminary library QC
+### generate lists of missing peptides, summary statistics, and a histogram showing read count distribution
+# 1. lib.regex = regex to recognize a library count file (ex. "library_.+trimmed.fq.sorted.bam.htseq.txt")
+# 2. directory = directory where to find library count files and also write output
+
+library.qc <- function(lib.regex, directory){
+  #Install/load packages
+  if (system.file(package = "tidyverse") == "") install.packages("tidyverse")
+  if (is.null(sessionInfo()$otherPkgs$tidyverse)) library(tidyverse)
+  
+  #Read in files of library counts
+  libs <- list.files(directory)[grepl(lib.regex, list.files(directory))]
+  for (i in 1:length(libs)){
+    lib.i <- read.table(paste(directory, libs[i], sep = "/"), header = F, comment.char = "_")
+    if (i == 1) count_matrix_lib <- lib.i else count_matrix_lib <- left_join(count_matrix_lib, lib.i, by = "X1")
+  }
+  
+  #Filter for peptides (counts files have bowtie info at the bottom)
+  count_matrix_lib <- count_matrix_lib %>% column_to_rownames(var = "V1")
+  
+  # Concatenate library input samples and calculate/include log10 of read counts
+  library_cat <- data.frame(pep_id = rownames(count_matrix_lib), Reads = rowSums(count_matrix_lib)) %>%
+    mutate(logReads = case_when(Reads != 0 ~ log10(Reads)))
+  
+  # How many library members were detected
+  n_library <- nrow(library_cat)
+  n_detected <- sum(library_cat$Reads > 0)
+  pct_detected <- round(n_detected/n_library*100, digits = 2)
+  
+  # Get represented tiles and how many are within 1 log abundance
+  not_missing <- library_cat %>% filter(Reads != 0) 
+  
+  # Generate 1 log abundance intervals
+  log_max <- max(not_missing$logReads)
+  log_min <- min(not_missing$logReads)
+  n <- length(not_missing$logReads)/10
+  intervals <- data.frame(
+    i_min = c(0:(n-1))*(log_max-1)/n,
+    i_max = c(0:(n-1))*(log_max-1)/n+1) %>% 
+    mutate(c_min = round(10^i_min), c_max = round(10^i_max))
+  # Find 1 log abundance interval with largest area
+  intervals$n_pep <- apply(intervals, 1, function(x) sum(not_missing$logReads > x[1] & not_missing$logReads < x[2]))
+  one_log <- max(intervals$n_pep)
+  pct_log <- round(one_log/nrow(not_missing)*100,2)
+  m_low <- min(intervals$c_min[intervals$n_pep == one_log])
+  m_high <- max(intervals$c_max[intervals$n_pep == one_log])
+  
+  # Make file of all members
+  all_members <- library_cat %>%
+    mutate(status = case_when(Reads == 0 ~ "Missing", (Reads < m_low) & (Reads > 0) ~ "Underrepresented", TRUE ~ "Represented"))
+  write.csv(all_members, file = paste(directory, "library_representation.csv", sep = "/"), quote = FALSE)
+  
+  # Make qc summary file
+  lines <- c("Library Peptide QC Summary",
+             paste0(n_detected, " of ", n_library, " (", pct_detected, "%) peptides detected."),
+             paste0(one_log, " of ", nrow(not_missing), " (", pct_log, "%) detected peptides were within one log abundance (", m_low, "-", m_high,")."))
+  print(lines)
+  writeLines(lines, paste(directory, "library_qc_summary.txt", sep = "/"))
+  
+  # Plot distribution
+  print(
+    not_missing %>%
+      ggplot(aes(x = Reads))+
+      geom_histogram(fill = "#1177BB", color = "black")+
+      scale_x_log10()+
+      geom_vline(xintercept = m_low, lty = 2, color = "red")+
+      geom_vline(xintercept = m_high, lty = 2, color = "red")+
+      ylab("Frequency")+
+      theme_bw()
+  )
+  ggsave(paste(directory, "library_qc_histogram.pdf", sep = "/"))
+}
+
+library.qc(lib.regex = "lib_ctl", directory = "FigureData/LibraryInputCTLs/")
+
+```
+
+Function creates 3 files:
+* library_qc_histogram.pdf - histogram of detected library reads per peptide
+* library_qc_summary.txt - contains proportions of peptide tiles detected
+* library_representation.csv - record of which tiles are represented, underrepresented, or undetected
+
+HAT samples were split between 13 batches on 96-well plates. Each plate contained 8 wells with mock IPs with no serum for enrichment analysis of the samples contained within the plate, and a library input control which sequenced only diluted phage library. The read distribution of all library input controls is shown here. We detected 51,037 of the 76,601 tiles initially included in the library design (66.6%) and 55.4% of detected peptides were within one log read abundance. 
+
+```{r, echo=FALSE}
+sessionInfo()
+```

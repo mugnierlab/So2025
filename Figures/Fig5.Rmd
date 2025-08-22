@@ -1,0 +1,1007 @@
+---
+title: "Figure 5"
+author: "Jaime So"
+date: "2025-08-21"
+output: 
+  html_document:
+    css: ~/rmarkdown_formatting/style.css
+    includes:
+      after_body: ~/rmarkdown_formatting/JSo_footer.html
+    number_sections: False
+    theme: flatly
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    fig_caption: True
+    df_print: kable
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+library(matrixStats)
+library(MASS)
+library(class)
+library(boot)
+#install.packages("tree")
+library(tree)
+#install.packages("glmnet")
+library(glmnet)
+library(cowplot)
+library('broom')
+# caret is a CRAN package
+#install.packages("caret")
+library(caret)
+#install.packages("caretEnsemble")
+library(caretEnsemble)
+#install.packages('plotROC')
+library("plotROC")
+library(pheatmap)
+library(readxl)
+library(viridis)
+library(ggbeeswarm)
+library(kableExtra)
+
+# function for summarizing results
+ressummary <- function(pred, truth){
+  res <- x <- data.frame(test_error = mean(pred != truth),
+                         sensitivity = table(pred, truth)[2,2] / (table(pred, truth)[2,2] + table(pred, truth)[1,2]),
+                         specificity  = table(pred, truth)[1,1] / (table(pred, truth)[1,1] + table(pred, truth)[2,1]),
+                         precision = table(pred, truth)[2,2] / (table(pred, truth)[2,2] + table(pred, truth)[2,1]))
+  return(res)
+}
+
+```
+<br><br><br><br>
+
+# Building Models {.tabset .tabset-fade .tabset-pills}
+***
+
+The readout for PhIP-seq is a log2fc value from edgeR analysis of pairwise comparisons between each sample and the distribution generated from mock IPs with no serum. Significance is determined from these values if there is enrichment of reads belonging to a peptide over those detected as background signal in the mock distribution. We ran 8 beads-only mocks per plate. Each sample and all technical replicates that passed quality checks were compared against the mocks which were run on the same plate. The fold change matrix contains the average fold change value over mocks for all technical sample replicates which passed initial library QC checks such as a minimum library read depth cutoff and the percentage of reads that successfully aligned to reference.
+
+All negative logfc values have been re-coded to zeros (0) and those specificities considered undetected in a sample. Only a positive fold change over mocks can reliably be considered signal of antibody binding to specific peptides.
+
+Matrix contains all detected peptides as rows and all samples as columns, again the average value of 2-3 technical replicates is reported. any sample with less than two replicates passing QC were excluded.
+
+**Model design**
+
+This is a problem of classification, determining infection status based on peptide enrichment values (log2fc enrichment over mocks) as predictors.
+
+Split the matrix of results into test (20% of observations) and train (80% of observations) sets. transform the matrix so samples are rows and peptides are columns. Add infection status as a column tot the matrix, recode it as a binary variable where infection = 1 and uninfected/seronegative = 0
+
+For training and testing the models, use all available endemic African controls. This should make the predictors more robust. There are plenty of countries (Uganda, Tanzania) where both Tbg and Tbr are suspected to circulate.
+
+**Choosing predictors**
+
+There are over 50000 peptides in the library which could be used as predictors. Every predictor included in building a model introduces variability and if they do not meaningfully affect the outcome of interest then they can negatively affect the model fit.
+
+We will need to select a smaller subset of variables to build a model, lasso or random forest may be the best and most computationally efficient methods with lasso using shrinkage to reduce unimportant coefficients to zero and random forest using random combinations of predictors. selection of predictors can increase the accuracy of our model.
+
+```{r}
+
+fc_mat <- read_csv("FigureData/fc_mat.csv")
+# A preliminary feature selection option
+# find peptides that are statistically significant between sample groups (infected v. negative) at a population level
+
+candidates <- reshape2::melt(fc_mat, value.name = "log2fc")
+colnames(candidates) <- c("Peptide", "sample", "log2fc")
+
+# define the set of infected samples, infection status is featured in sample name
+# save it as a binary variable so it may be used to train models later
+Tbr_status <- data.frame(sample = colnames(fc_mat)) %>% filter(grepl("r", .$sample))
+Tbr_status$status <- case_when(grepl("Cr", Tbr_status$sample ) ~ "Neg",
+                               TRUE ~ "Pos") %>% as.factor()
+Tbr_status$status <- factor(Tbr_status$status, levels = c("Pos", "Neg"))
+
+# perform wilcoxon ranked sum test
+Tbr_candidates <- candidates %>% inner_join(Tbr_status) %>%
+  group_by(Peptide) %>% do(tidy(wilcox.test(log2fc~status, data = ., alternative = "greater")))
+
+# adjust p-values using BH method
+Tbr_candidates$padj = p.adjust(Tbr_candidates$p.value, method = "BH")
+# filter the peptides with fdr < 0.2 and save these for later
+Tbr_sig <- Tbr_candidates %>% filter(padj < 0.2) %>% .$Peptide
+
+Tbg_status <- data.frame(sample = colnames(fc_mat)) %>% filter(grepl("g", .$sample))
+Tbg_status$status <- case_when(grepl("Cg", Tbg_status$sample ) ~ "Neg",
+                               TRUE ~ "Pos") %>% as.factor()
+Tbg_status$status <- factor(Tbg_status$status, levels = c("Pos", "Neg"))
+# perform wilcoxon ranked sum test
+Tbg_candidates <- candidates %>% inner_join(Tbg_status) %>%
+  group_by(Peptide) %>% do(tidy(wilcox.test(log2fc~status, data = ., alternative = "greater")))
+
+# adjust p-values using BH method
+Tbg_candidates$padj = p.adjust(Tbg_candidates$p.value, method = "BH")
+# filter the peptides with low fdr and save these for later
+Tbg_sig <- Tbg_candidates %>% filter(padj < 0.00001) %>% .$Peptide
+
+
+# assign peptide names as rownames of the matrix
+peps <- fc_mat$Peptide
+
+fc_mat <- fc_mat %>% dplyr::select(-Peptide)
+
+
+# Load Sample Metadata
+HATmeta <- read_xlsx(path = "FigureData/2023_HATData_MMugnier_2023_0427.xlsx", sheet = "Serology_Parasitological_Data", col_names = T, skip = 1)
+colnames(HATmeta) <- c("ID", "sex", "age", "stage", "country", "center", "CATT_whole", "CATT_quarter", "CATT_titer", "Thick_smear", "CTC_blood", "mAECT_blood", "lymph_node_puncture", "CSF_direct", "CSF_2xCent", "CSF_1xCent", "Trypanolysis_TL", "LiTat1.3_TL", "LiTat1.5_TL", "Combined_TL", "CSF_WBC", "Hemorrhagic_CSF", "CSF_RBC")
+
+HATmeta$ID <- gsub("/", "-", HATmeta$ID)
+HATmeta <- HATmeta %>% unite("sample", c(ID, stage), sep = "_", remove = F) %>% dplyr::select(sample, stage, sex, age, center, country)
+HATmeta$sex <- case_when(HATmeta$sex == "Féminin" ~ "Female",
+                         HATmeta$sex == "Masculin" ~ "Male",
+                         TRUE ~ "no data")
+
+#add in the non-endemic controls
+CnMeta <- read_csv("FigureData/Nonendemic_metadata.csv", show_col_types = F) %>% dplyr::select(patient_id...1, Stage, rcr_sex1, bio_scr_p6, bio_scr_p8)
+colnames(CnMeta) <- c("sample", "stage", "sex", "age", "center")
+CnMeta <- CnMeta %>% mutate(country = "Bolivia")
+
+HATmeta <- rbind(HATmeta, CnMeta)
+
+```
+
+## Tbr Models
+
+**Assess the performance of different models**
+
+A common problem that seems to happen is that some models are really good at fitting the training data but not very good at predicting. Several samples in the Tbr set are pretty unique so there is probably significant variability in the testing and training sets. randomly generate and train on 10 different sets of data to assess the overall performance of different models.
+
+```{r}
+# filter the matrix to only include the tbr infected cohort and all endemic negative controls 
+Tbr_df <- data.frame(t(fc_mat[, c(grep("r", colnames(fc_mat)), grep("Cg", colnames(fc_mat)))]))
+colnames(Tbr_df) <- peps
+
+# add infection binary variable
+Tbr_df$sample <- rownames(Tbr_df)
+Tbr_status <- data.frame(sample = Tbr_df$sample)
+Tbr_status$status <- case_when(grepl("C", Tbr_status$sample ) ~ "Neg",
+                               TRUE ~ "Pos") %>% as.factor()
+
+Tbr_df <- merge(Tbr_df, Tbr_status)
+
+Tbr_samples <- Tbr_df$sample
+Tbr_df <- Tbr_df %>% dplyr::select(-sample)
+rownames(Tbr_df) <- Tbr_samples
+
+# Find the best performing models
+
+# Train, tune, and select from these candidate predictors to build the model
+# Define the training control
+fitControl <- trainControl(
+    method = 'repeatedcv', # repeated k-fold cross validation
+    number = 5, # number of folds
+    repeats = 10,
+    savePredictions = 'final', # saves predictions for optimal tuning parameter
+    classProbs = T, # should class probabilities be returned
+    summaryFunction=twoClassSummary  # results summary function
+) 
+
+# not all algorithms have built-in feature selection
+# use lasso to choose predictors and then build models using logistic regression, lda, qda, knn
+set.seed(1234)
+train_ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+trainer_tbr <- Tbr_df[train_ind, c(Tbr_sig, "status")]
+tester_tbr <- Tbr_df[-train_ind, c(Tbr_sig, "status")]
+
+trainer_mat <- model.matrix(status ~ ., data = trainer_tbr)[, -1]
+trainer_res <- trainer_tbr$status
+y <- as.double(trainer_res) %>% replace(., . == 1, 0) %>% replace(., . == 2, 1)
+tester_mat <- model.matrix(status ~., data = tester_tbr)[, -1]
+tester_res <- tester_tbr$status
+lasso_out <- glmnet(trainer_mat, trainer_res, alpha = 1, family = 'binomial')
+
+# find best lambda by cross-validation
+cv_out <- cv.glmnet(trainer_mat, y, alpha = 1)
+bestlam <- cv_out$lambda.min
+lasso_coeff <- predict(lasso_out, s = bestlam, newx = tester_mat, type = 'coefficients')[1:24, ]
+which(lasso_coeff > 0) %>% names()
+# use these as predictors for the algorithms w/out selection
+
+glm_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+glm_models <- list() # save all generated models in a list call with models[[i]]
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  tester <- Tbr_df[-ind, c(Tbr_sig, "status")]
+  mod <- train(status ~ `AF107887.1|270-360`+`CAA85518.2|180-270`+`Tb427VSG-1214|315-405`+`Tb427VSG-1343|225-315`+`Tb427VSG-1596|225-315`+`Tb427VSG-2069|291-381`+`Tb427VSG-340|439-529`+`Tbb1125VSG-2036|405-495`+`Tbb1125VSG-4218|406-496`+`Tbb1125VSG-4304|45-135`+`Tbb1125VSG-4304|90-180`+`Tbb927VSG-1041|90-180`+`Tbb927VSG-1611|45-135`+`Tbb927VSG-1617|225-315`, data = trainer, method = 'glm', metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  glm_stats <- rbind(glm_stats, x)
+  glm_models[[i]] <- mod 
+}
+glm_stats
+
+
+qda_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+qda_models <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  tester <- Tbr_df[-ind, c(Tbr_sig, "status")]
+  mod <- train(status ~ `AF107887.1|270-360`+`CAA85518.2|180-270`+`Tb427VSG-1214|315-405`+`Tb427VSG-1343|225-315`+`Tb427VSG-1596|225-315`+`Tb427VSG-2069|291-381`+`Tb427VSG-340|439-529`+`Tbb1125VSG-2036|405-495`+`Tbb1125VSG-4218|406-496`+`Tbb1125VSG-4304|45-135`+`Tbb1125VSG-4304|90-180`+`Tbb927VSG-1041|90-180`+`Tbb927VSG-1611|45-135`+`Tbb927VSG-1617|225-315`, data = trainer, method = 'qda', metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  qda_stats <- rbind(qda_stats, x)
+  qda_models[[i]] <- mod
+}
+qda_stats
+
+
+boost_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+boost_models <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  tester <- Tbr_df[-ind, c(Tbr_sig, "status")]
+  mod <- train(status ~ ., data = trainer, method = 'glmboost', tuneLength = 5, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  boost_stats <- rbind(boost_stats, x)
+  boost_models[[i]] <- mod
+}
+boost_stats
+
+
+svm_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+svm_models <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  tester <- Tbr_df[-ind, c(Tbr_sig, "status")]
+  mod <- train(status ~ ., data = trainer, method = 'svmRadial', tuneLength = 15, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  svm_stats <- rbind(svm_stats, x)
+  svm_models[[i]] <- mod
+}
+svm_stats
+
+
+rf_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+rf_models <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  tester <- Tbr_df[-ind, c(Tbr_sig, "status")]
+  mod <- train(status ~ ., data = trainer, method = 'rf', tuneLength = 5, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  rf_stats <- rbind(rf_stats, x)
+  rf_models[[i]] <- mod
+}
+rf_stats
+
+
+mars_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+mars_models <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  tester <- Tbr_df[-ind, c(Tbr_sig, "status")]
+  mod <- train(status ~., data = trainer, method='earth', tuneLength = 5, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  mars_stats <- rbind(mars_stats, x)
+  mars_models[[i]] <- mod
+}
+mars_stats
+
+
+tbr_top_mod_res <- rbind(glm_stats %>% mutate(method = "Log Reg"),
+                     qda_stats %>% mutate(method = "QDA"),
+                     boost_stats %>% mutate(method = "Boost"),
+                     svm_stats %>% mutate(method = "Radial SVM"),
+                     rf_stats %>% mutate(method = "Random Forest"),
+                     mars_stats %>% mutate(method = "MARS"))
+# plot results
+r1 <- ggplot(tbr_top_mod_res, aes(x = method, y = test_error, fill = method))+
+  geom_boxplot()+
+  ylab("Test Error")+
+  guides(fill = 'none')+
+  theme_bw()
+
+r2 <- ggplot(tbr_top_mod_res, aes(x = method, y = sensitivity, fill = method))+
+  geom_boxplot()+
+  ylab("Sensitivity")+
+  guides(fill = 'none')+
+  theme_bw()
+
+r3 <- ggplot(tbr_top_mod_res, aes(x = method, y = specificity, fill = method))+
+  geom_boxplot()+
+  ylab("Specificity")+
+  guides(fill = 'none')+
+  theme_bw()
+
+r4 <- ggplot(tbr_top_mod_res, aes(x = method, y = precision, fill = method))+
+  geom_boxplot()+
+  ylab("Precision")+
+  guides(fill = 'none')+
+  theme_bw()
+
+plot_grid(r1, r2, r3, r4, nrow=2)
+
+# select the algorithms that consistently produce the best results: low test error, high precision
+
+tbr_test_stats <- rbind(mars_stats %>% filter(sensitivity > 0.7 & test_error < 0.15) %>% mutate(method = "MARS"),
+                        boost_stats %>% filter(sensitivity > 0.7 & test_error < 0.15) %>% mutate(method = "Boost"),
+                        glm_stats %>% filter(sensitivity > 0.7 & test_error < 0.15) %>% mutate(method = "glm"))
+tbr_test_stats
+# the index indicates the seed used to generate test and training datasets
+# save the top performing models in a list
+
+tbr_best <- list(glm_models[[3]], glm_models[[5]], boost_models[[2]], boost_models[[3]], boost_models[[5]], mars_models[[2]], mars_models[[3]], mars_models[[5]])
+
+lapply(tbr_best, varImp)
+# %>% select(Pos, names, model) %>% dplyr::rename("Overall"="Pos")
+final_tbr <- rbind(varImp(tbr_best[[1]])$importance %>% mutate(names=row.names(.), model = "glm_3"),
+                   varImp(tbr_best[[2]])$importance %>% mutate(names=row.names(.), model = "glm_5"),
+                   varImp(tbr_best[[3]])$importance %>% mutate(names=row.names(.), model = "boost_2"),
+                   varImp(tbr_best[[4]])$importance %>% mutate(names=row.names(.), model = "boost_3"),
+                   varImp(tbr_best[[5]])$importance %>% mutate(names=row.names(.), model = "boost_5"),
+                   varImp(tbr_best[[6]])$importance %>% mutate(names=row.names(.), model = "MARS_2"),
+                   varImp(tbr_best[[7]])$importance %>% mutate(names=row.names(.), model = "MARS_3"),
+                   varImp(tbr_best[[8]])$importance %>% mutate(names=row.names(.), model = "MARS_5"))
+
+final_tbr$names <- gsub("`", "", final_tbr$names) %>% gsub("\\\\", "", .)
+final_tbr <- final_tbr %>% filter(Overall > 0)
+
+```
+
+Boost, glm, and MARS are now probably the best performing models. They have reasonably high sensitivity and specificity, have a relatively low test error, and maintain high precision/accuracy. for each iterated Boost and MARS model, extract the variables of high importance. These will become our short list of candidates to validate as possible diagnostic peptides.
+
+## Tbg Models
+
+There are way too many predictors for this to be efficient, even after filtering using significance testing.
+
+**Caret Package: Recursive Feature Elimination**
+
+- Step 1: Build a ML model on a training dataset and estimate the feature importances on the test dataset.
+
+- Step 2: Keeping priority to the most important variables, iterate through by building models of given subset sizes, that is, subgroups of most important predictors determined from step 1. Ranking of the predictors is recalculated in each iteration.
+
+- Step 3: The model performances are compared across different subset sizes to arrive at the optimal number and list of final predictors.
+
+It can be implemented using the rfe() function and you have the flexibility to control what algorithm rfe uses and how it cross validates by defining the rfeControl()
+
+```{r}
+
+# filter the matrix to only include the tbg infected cohort and all endemic negative controls 
+Tbg_df <- data.frame(t(fc_mat[, c(grep("g", colnames(fc_mat)), grep("Cr", colnames(fc_mat)))]))
+colnames(Tbg_df) <- peps
+
+# add infection binary variable
+Tbg_df$sample <- rownames(Tbg_df)
+Tbg_status <- data.frame(sample = Tbg_df$sample)
+Tbg_status$status <- case_when(grepl("C", Tbg_status$sample ) ~ "Neg",
+                               TRUE ~ "Pos") %>% as.factor()
+
+Tbg_df <- merge(Tbg_df, Tbg_status)
+
+Tbg_samples <- Tbg_df$sample
+Tbg_df <- Tbg_df %>% dplyr::select(-sample)
+rownames(Tbg_df) <- Tbg_samples
+
+```
+
+
+```{r, eval=FALSE}
+# make testing and training datasets
+train_ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+trainer_tbg <- Tbg_df[train_ind, c(Tbg_sig, "status")]
+tester_tbg <- Tbg_df[-train_ind, c(Tbg_sig, "status")]
+
+# recursive feature elimination (rfe)
+# define the size of variable subsets the function should consider
+subsets <- c(10, 15, 20, 50, 100, 200, 500)
+ctrl <- rfeControl(functions = rfFuncs, #rfFuncs is random forest algorithm
+                   method = "repeatedcv", #repeated cross-validation approach
+                   repeats = 5, # the number of times it should be repeated (k)
+                   verbose = FALSE)
+
+lmProfile <- rfe(x=trainer_tbg[, -2001], y=trainer_tbg$status,
+                 sizes = subsets,
+                 rfeControl = ctrl)
+
+lmProfile
+
+# Optimal variables
+rf_opt <- lmProfile$optVariables
+```
+
+Optimized variables from RFE were saved in a file
+
+```{r}
+
+rf_opt <- read_csv("FigureData/Tbg_RFE.csv", col_names = F, show_col_types = F) %>% .$X1 
+
+set.seed(1234)
+train_ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+trainer_tbg <- Tbg_df[train_ind, c(rf_opt, "status")]
+tester_tbg <- Tbg_df[-train_ind, c(rf_opt, "status")]
+
+# Train, tune, and select from these candidate predictors to build the model
+# Define the training control
+fitControl <- trainControl(
+    method = 'repeatedcv', # repeated k-fold cross validation
+    number = 5, # number of folds
+    repeats = 10,
+    savePredictions = 'final', # saves predictions for optimal tuning parameter
+    classProbs = T, # should class probabilities be returned
+    summaryFunction=twoClassSummary  # results summary function
+) 
+
+# use lasso to choose predictors and then build models using logistic regression, lda, qda, knn
+trainer_mat <- model.matrix(status ~ ., data = trainer_tbg)[, -1]
+trainer_res <- trainer_tbg$status
+y <- as.double(trainer_res) %>% replace(., . == 1, 0) %>% replace(., . == 2, 1)
+tester_mat <- model.matrix(status ~., data = tester_tbg)[, -1]
+tester_res <- tester_tbg$status
+lasso_out <- glmnet(trainer_mat, trainer_res, alpha = 1, family = 'binomial')
+
+# find best lambda by cross-validation
+cv_out <- cv.glmnet(trainer_mat, y, alpha = 1)
+bestlam <- cv_out$lambda.min
+lasso_coeff <- predict(lasso_out, s = bestlam, newx = tester_mat, type = 'coefficients')[1:50, ]
+which(lasso_coeff > 0) %>% names()
+
+# identify the best performing models
+
+glm_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+tbg_model_glm <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  tester <- Tbg_df[-ind, c(rf_opt, "status")]
+  mod <- train(status ~`Tb427VSG-2211|0-90`+`Tbb1125VSG-6504|0-90`+`Tbb1125VSG-2583|180-270`+`Tb427VSG-1426|270-360`+`Tbb1125VSG-246|45-135`+`Tbb927VSG-147|45-135`+`Tb427VSG-6146|0-90`+`Tb427VSG-6609|90-180`+`Tb427VSG-1015|90-180`+`Tbb1125VSG-6008|45-135`+`Tbb1125VSG-1677|45-135`+`Tb427VSG-1008|45-135`+`Tb427VSG-807|225-315`+`KC434512.1|45-135`+`Tb427VSG-3693|0-90`, data = trainer_tbg, method = 'glm', metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  glm_stats <- rbind(glm_stats, x)
+  tbg_model_glm[[i]] <- mod
+}
+glm_stats
+
+
+qda_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+tbg_model_qda <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  tester <- Tbg_df[-ind, c(rf_opt, "status")]
+  mod <- train(status ~ `Tb427VSG-2211|0-90`+`Tbb1125VSG-6504|0-90`+`Tbb1125VSG-2583|180-270`+`Tb427VSG-1426|270-360`+`Tbb1125VSG-246|45-135`+`Tbb927VSG-147|45-135`+`Tb427VSG-6146|0-90`+`Tb427VSG-6609|90-180`+`Tb427VSG-1015|90-180`+`Tbb1125VSG-6008|45-135`+`Tbb1125VSG-1677|45-135`+`Tb427VSG-1008|45-135`+`Tb427VSG-807|225-315`+`KC434512.1|45-135`+`Tb427VSG-3693|0-90`, data = trainer, method = 'qda', metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status)  %>% mutate(index = i)
+  qda_stats <- rbind(qda_stats, x)
+  tbg_model_qda[[i]] <- mod
+}
+qda_stats
+
+lda_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+tbg_model_lda <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  tester <- Tbg_df[-ind, c(rf_opt, "status")]
+  mod <- train(status ~ `Tb427VSG-2211|0-90`+`Tbb1125VSG-6504|0-90`+`Tbb1125VSG-2583|180-270`+`Tb427VSG-1426|270-360`+`Tbb1125VSG-246|45-135`+`Tbb927VSG-147|45-135`+`Tb427VSG-6146|0-90`+`Tb427VSG-6609|90-180`+`Tb427VSG-1015|90-180`+`Tbb1125VSG-6008|45-135`+`Tbb1125VSG-1677|45-135`+`Tb427VSG-1008|45-135`+`Tb427VSG-807|225-315`+`KC434512.1|45-135`+`Tb427VSG-3693|0-90`, data = trainer, method = 'lda', metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status)  %>% mutate(index = i)
+  lda_stats <- rbind(lda_stats, x)
+  tbg_model_lda[[i]] <- mod
+}
+lda_stats
+
+boost_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+tbg_model_boost <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  tester <- Tbg_df[-ind, c(rf_opt, "status")]
+  mod <- train(status ~ ., data = trainer, method = 'glmboost', tuneLength = 5, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  boost_stats <- rbind(boost_stats, x)
+  tbg_model_boost[[i]] <- mod
+}
+boost_stats
+
+svm_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+tbg_model_svm <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  tester <- Tbg_df[-ind, c(rf_opt, "status")]
+  mod <- train(status ~ ., data = trainer, method = 'svmRadial', tuneLength = 15, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status)  %>% mutate(index = i)
+  svm_stats <- rbind(svm_stats, x)
+  tbg_model_svm[[i]] <- mod
+}
+svm_stats
+
+
+rf_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+tbg_model_rf <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  tester <- Tbg_df[-ind, c(rf_opt, "status")]
+  mod <- train(status ~ ., data = trainer, method = 'rf', tuneLength = 5, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  rf_stats <- rbind(rf_stats, x)
+  tbg_model_rf[[i]] <- mod
+}
+rf_stats
+
+
+mars_stats <- data.frame(test_error = double(),
+                        sensitivity = double(),
+                        specificity = double(),
+                        precision = double())
+tbg_model_mars <- list()
+
+for (i in 1:10){
+  set.seed(i)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  tester <- Tbg_df[-ind, c(rf_opt, "status")]
+  mod <- train(status ~., data = trainer, method='earth', tuneLength = 10, metric = 'ROC', trControl = fitControl)
+  preds <- predict(mod, tester)
+  x <- ressummary(preds, tester$status) %>% mutate(index = i)
+  mars_stats <- rbind(mars_stats, x)
+  tbg_model_mars[[i]] <- mod
+}
+mars_stats
+
+
+tbg_top_mod_res <- rbind(glm_stats %>% mutate(method = "Logistic Regression"),
+                     qda_stats %>% mutate(method = "QDA"),
+                     lda_stats %>% mutate(method = "LDA"),
+                     boost_stats %>% mutate(method = "Boost"),
+                     svm_stats %>% mutate(method = "Radial SVM"),
+                     rf_stats %>% mutate(method = "Random Forest"),
+                     mars_stats %>% mutate(method = "MARS"))
+# plot results
+r1 <- ggplot(tbg_top_mod_res, aes(x = method, y = test_error, fill = method))+
+  geom_boxplot()+
+  ylab("Test Error")+
+  guides(fill = 'none')+
+  theme_bw()
+
+r2 <- ggplot(tbg_top_mod_res, aes(x = method, y = sensitivity, fill = method))+
+  geom_boxplot()+
+  ylab("Sensitivity")+
+  guides(fill = 'none')+
+  theme_bw()
+
+r3 <- ggplot(tbg_top_mod_res, aes(x = method, y = specificity, fill = method))+
+  geom_boxplot()+
+  ylab("Specificity")+
+  guides(fill = 'none')+
+  theme_bw()
+
+r4 <- ggplot(tbg_top_mod_res, aes(x = method, y = precision, fill = method))+
+  geom_boxplot()+
+  ylab("Precision")+
+  guides(fill = 'none')+
+  theme_bw()
+
+plot_grid(r1, r2, r3, r4, nrow=2)
+
+tbg_test_stats <- rbind(mars_stats %>% filter(sensitivity >= 0.95 & test_error < 0.025 & specificity == 1) %>% mutate(method = "MARS"),
+                        boost_stats %>% filter(sensitivity >= 0.95 & test_error < 0.025 & specificity == 1) %>% mutate(method = "boost"),
+                        glm_stats %>% filter(sensitivity >= 0.95 & test_error < 0.025 & specificity == 1) %>% mutate(method = "glm"),
+                        lda_stats %>% filter(sensitivity >= 0.95 & test_error < 0.025 & specificity == 1) %>% mutate(method = "lda"))
+
+# the index indicates the seed used to generate test and training datasets
+# save the top performing models in a list
+tbg_test_stats
+
+# LDA and GLM both used the lasso selected peptides as predictors so they do not add too much, pick one of each as representatives
+
+tbg_best <- list(tbg_model_glm[[2]], tbg_model_lda[[5]], tbg_model_boost[[1]], tbg_model_boost[[3]], tbg_model_boost[[5]], tbg_model_mars[[1]], tbg_model_mars[[2]], tbg_model_mars[[3]], tbg_model_mars[[7]], tbg_model_mars[[8]], tbg_model_mars[[9]])
+
+final_tbg <- rbind(varImp(tbg_best[[1]])$importance %>% mutate(names=row.names(.), model = "glm_2"),
+                   varImp(tbg_best[[2]])$importance %>% mutate(names=row.names(.), model = "lda_5") %>% dplyr::select(Pos, names, model) %>% dplyr::rename("Overall"="Pos"),
+                   varImp(tbg_best[[3]])$importance %>% mutate(names=row.names(.), model = "boost_1"),
+                   varImp(tbg_best[[4]])$importance %>% mutate(names=row.names(.), model = "boost_3"),
+                   varImp(tbg_best[[5]])$importance %>% mutate(names=row.names(.), model = "boost_5"),
+                   varImp(tbg_best[[6]])$importance %>% mutate(names=row.names(.), model = "MARS_1"),
+                   varImp(tbg_best[[7]])$importance %>% mutate(names=row.names(.), model = "MARS_2"),
+                   varImp(tbg_best[[8]])$importance %>% mutate(names=row.names(.), model = "MARS_3"),
+                   varImp(tbg_best[[9]])$importance %>% mutate(names=row.names(.), model = "MARS_7"),
+                   varImp(tbg_best[[10]])$importance %>% mutate(names=row.names(.), model = "MARS_8"),
+                   varImp(tbg_best[[11]])$importance %>% mutate(names=row.names(.), model = "MARS_9"))
+
+final_tbg$names <- gsub("`", "", final_tbg$names) %>% gsub("\\\\", "", .)
+final_tbg <- final_tbg %>% filter(Overall > 0)
+
+```
+
+## Candidate Diagnostics
+
+violin plots of signal distribution for candidate diagnostic peptides
+```{r}
+
+# remove the apostrophes from the petides in the list so they match the dataframe peptide names
+
+candidates <- candidates %>% mutate(status = case_when(grepl("Pr", sample)~"Infected Tbr",
+                                         grepl("Cr", sample)~"Uninfected Tbr",
+                                         grepl("Pg", sample)~"Infected Tbg",
+                                         grepl("Cg", sample)~"Uninfected Tbg",
+                                         grepl("NC", sample)~ "Control"))
+
+
+candidates %>% filter(Peptide %in% unique(final_tbr$names)) %>%
+  ggplot(aes(x = status, y = log2fc, fill = status, color = status))+
+  geom_violin(scale = "width")+
+  geom_quasirandom(size = 1)+
+  facet_wrap(~Peptide)+
+  scale_fill_manual(values = c("grey40", "#FEBA80FF", "#3497A9FF", "#982D80FF", "#5F187FFF"))+
+  scale_color_manual(values = c("grey40", "#FEBA80FF", "#3497A9FF", "#982D80FF", "#5F187FFF"))+
+  xlab("")+
+  ggtitle("Tbr Diagnostic Peptides")+
+  theme_bw()
+
+
+candidates %>% filter(Peptide %in% unique(final_tbg$names)) %>%
+  ggplot(aes(x = status, y = log2fc, fill = status, color = status))+
+  geom_violin(scale = "width")+
+  geom_quasirandom(size = 1)+
+  facet_wrap(~Peptide)+
+  scale_fill_manual(values = c("grey40", "#FEBA80FF", "#3497A9FF", "#982D80FF", "#5F187FFF"))+
+  scale_color_manual(values = c("grey40", "#FEBA80FF", "#3497A9FF", "#982D80FF", "#5F187FFF"))+
+  xlab("")+
+  ggtitle("Tbg Diagnostic Peptides")+
+  theme_bw()
+
+
+```
+
+## Peptide Types
+
+Are the candidate tiles derived from A or B type VSGs?
+```{r}
+
+tile_info <- read_csv("FigureData/VSG_Tile_Classification.csv", show_col_types = F)
+
+# tbg candidates: make sure they're not all B type or we will have same problem as the CATT
+kbl(tile_info %>% filter(pep_id %in% unique(final_tbg$names)))
+# they're almost all type B besides an undefined NTD and an A2
+
+# tbr candidates
+kbl(tile_info %>% filter(pep_id %in% unique(final_tbr$names)))
+
+```
+
+***
+# A 
+***
+Tbg ROC
+
+```{r}
+# Plot ROC
+tbg_roc_data <- data.frame()
+
+for(i in 1:length(tbg_best)){
+  x <- tbg_best[[i]]$pred %>% dplyr::select(pred, obs, rowIndex, Neg, Pos, Resample) %>% mutate(model_ind = i)
+  tbg_roc_data <- rbind(tbg_roc_data, x)
+
+}
+
+tbg_roc_data$model <- case_when(tbg_roc_data$model_ind == 1 ~ "glm_2",
+                                tbg_roc_data$model_ind == 2 ~ "lda_5",
+                                tbg_roc_data$model_ind == 3 ~ "boost_1",
+                                tbg_roc_data$model_ind == 4 ~ "boost_3",
+                                tbg_roc_data$model_ind == 5 ~ "boost_5",
+                                tbg_roc_data$model_ind == 6 ~ "MARS_1",
+                                tbg_roc_data$model_ind == 7 ~ "MARS_2",
+                                tbg_roc_data$model_ind == 8 ~ "MARS_3",
+                                tbg_roc_data$model_ind == 9 ~ "MARS_7",
+                                tbg_roc_data$model_ind == 10 ~ "MARS_8",
+                                tbg_roc_data$model_ind == 11 ~ "MARS_9")
+tbg_roc_data$method <- case_when(grepl("boost", tbg_roc_data$model) ~ "boost",
+                                grepl("MARS", tbg_roc_data$model) ~ "MARS",
+                                TRUE ~ "Regression")
+
+tbg_ROC <- ggplot(tbg_roc_data, 
+       aes(m = Pos, d = factor(obs, levels = c("Neg", "Pos")), color = model)) +
+  geom_roc(n.cuts=0) + 
+  coord_equal() +
+  style_roc()+
+  facet_wrap(~method)+
+  scale_color_manual(values = c("#F1605DFF", "#FD9567FF", "#FEC98DFF", "#40498EFF", "#348AA6FF", "#20114BFF", "#3B0F70FF", "#57157EFF", "#721F81FF", "#8C2981FF", "#A8327DFF"))+
+  ggtitle("ROC Plot: Top Models for Tbg prediction")
+tbg_ROC
+
+calc_auc(tbg_ROC)
+
+```
+
+***
+# B
+***
+
+Tbr ROC
+```{r}
+# Plot ROC
+tbr_roc_data <- data.frame()
+
+for(i in 1:8){
+  x <- tbr_best[[i]]$pred %>% dplyr::select(pred, obs, rowIndex, Neg, Pos, Resample) %>% mutate(model_ind = i)
+  tbr_roc_data <- rbind(tbr_roc_data, x)
+
+}
+
+tbr_roc_data$model <- case_when(tbr_roc_data$model_ind == 1 ~ "glm_3",
+                                tbr_roc_data$model_ind == 2 ~ "glm_5",
+                                tbr_roc_data$model_ind == 3 ~ "boost_2",
+                                tbr_roc_data$model_ind == 4 ~ "boost_3",
+                                tbr_roc_data$model_ind == 5 ~ "boost_5",
+                                tbr_roc_data$model_ind == 6 ~ "MARS_2",
+                                tbr_roc_data$model_ind == 7 ~ "MARS_3",
+                                tbr_roc_data$model_ind == 8 ~ "MARS_5")
+tbr_roc_data$method <- case_when(grepl("glm", tbr_roc_data$model) ~ "glm",
+                                grepl("boost", tbr_roc_data$model) ~ "boost",
+                                grepl("MARS", tbr_roc_data$model) ~ "MARS")
+
+tbr_ROC <- ggplot(tbr_roc_data, 
+       aes(m = Pos, d = factor(obs, levels = c("Neg", "Pos")), color = model)) +
+  geom_roc(n.cuts=0) + 
+  coord_equal() +
+  style_roc()+
+  facet_wrap(~method)+
+  scale_color_manual(values = c("#F1605DFF", "#FD9567FF", "#FEC98DFF", "#40498EFF", "#348AA6FF", "#451077FF", "#721F81FF", "#9F2F7FFF"))+
+  ggtitle("ROC Plot: Top Models for Tbr prediction")
+tbr_ROC
+
+calc_auc(tbr_ROC)
+
+```
+
+***
+# C
+***
+
+Tbg heatmap
+```{r}
+# put the peptide column back into the fc matrix for the heatmaps
+fc_mat$Peptide <- peps
+
+key_rows <- HATmeta %>% dplyr::select(sample, stage)
+key_rows$stage <- factor(key_rows$stage, levels = c("Pg1", "Pg2", "Pr1", "Pr2","Cg", "Cr", "Cn"))
+key_rows <- key_rows %>% group_by(stage) %>% arrange(.by_group = T) %>% as.data.frame()
+rownames(key_rows) <- key_rows$sample
+key_rows <- key_rows[2]
+
+
+tbg_mat <- fc_mat %>% filter(Peptide %in% unique(final_tbg$names)) %>% as.data.frame()
+rownames(tbg_mat) <- tbg_mat$Peptide
+tbg_mat <- t(tbg_mat[,-353])
+
+pheatmap(tbg_mat[rownames(key_rows), ],
+         show_colnames= T,
+         show_rownames = F,
+         cluster_cols = T,
+         cluster_rows = F,
+         annotation_row = key_rows, 
+         gaps_row = c(100, 170, 320), #(head(as.numeric(cumsum(table(key_cols$Cohort))), -1)), this will split by all annotation groups
+         breaks = c(0, 2, 4, 6, 8, 10),
+         col = c("white", "grey70", "grey40", "grey20", "grey10", "black"),
+         annotation_legend = TRUE,
+         main = "IgG Pulldown: gHAT Diagnostic Candidates",
+         annotation_colors = list(stage = c("Cn"="grey40",
+                                            "Cg"="#982D80FF",
+                                            "Cr"="#5F187FFF",
+                                            "Pg1"="#f8765cff",
+                                            "Pg2"="#FEBA80FF",
+                                            "Pr1"="#395d9cff",
+                                            "Pr2"="#3497A9FF"))
+)
+
+```
+
+***
+# D
+***
+
+Tbr heatmap
+```{r}
+
+tbr_mat <- fc_mat %>% filter(Peptide %in% unique(final_tbr$names)) %>% as.data.frame()
+rownames(tbr_mat) <- tbr_mat$Peptide
+tbr_mat <- t(tbr_mat[,-353])
+
+
+pheatmap(tbr_mat[rownames(key_rows), ],
+         show_colnames= T,
+         show_rownames = F,
+         cluster_cols = T,
+         cluster_rows = F,
+         annotation_row = key_rows,
+         gaps_row = c(100, 170, 320),#(head(as.numeric(cumsum(table(key_cols$Cohort))), -1)),
+         breaks = c(0, 2, 4, 6, 8, 10),
+         col = c("white", "grey70", "grey40", "grey20", "grey10", "black"),
+         annotation_legend = TRUE,
+         main = "IgG Pulldown: rHAT Diagnostic Candidates",
+         annotation_colors = list(stage = c("Cn"="grey40",
+                                            "Cg"="#982D80FF",
+                                            "Cr"="#5F187FFF",
+                                            "Pg1"="#f8765cff",
+                                            "Pg2"="#FEBA80FF",
+                                            "Pr1"="#395d9cff",
+                                            "Pr2"="#3497A9FF"))
+)
+
+```
+
+***
+# E
+***
+
+re-code each heatmap matrix as binary positive or negative using different thresholds and count the number of positive peptides in controls vs patients. Define the threshold of detection as a log2(FC) > 2, this should be a reasonably strong signal.
+```{r}
+# Tbr
+tbr_mat_t2 <- tbr_mat
+tbr_mat_t2[tbr_mat_t2 < 2] <- 0
+tbr_mat_t2[tbr_mat_t2 >= 2] <- 1
+
+tbr_diagnostic_t2 <- data.frame(value = rowSums(tbr_mat_t2),
+                                sample = names(rowSums(tbr_mat_t2))) %>%
+  inner_join(HATmeta, by = c("sample"))
+
+tbr_diagnostic_t2 %>% 
+  ggplot(aes(x = stage, y = value, fill = stage))+
+  geom_boxplot()+
+  scale_fill_manual(values = c("grey40","#982D80FF","#5F187FFF","#f8765cff","#FEBA80FF","#395d9cff","#3497A9FF"))+
+  ggtitle("Total Detected Tbr Diagnostic Peptides per Patient")+
+  ylab("# Peptides")+
+  scale_y_continuous(limits = c(0, 10))+
+  theme_bw()+
+  theme(legend.position = "none")
+
+```
+
+***
+# F
+***
+
+```{r}
+# Tbg
+tbg_mat_t2 <- tbg_mat
+tbg_mat_t2[tbg_mat_t2 < 2] <- 0
+tbg_mat_t2[tbg_mat_t2 >= 2] <- 1
+
+tbg_diagnostic_t2 <- data.frame(value = rowSums(tbg_mat_t2),
+                                sample = names(rowSums(tbg_mat_t2))) %>%
+  inner_join(HATmeta, by = c("sample"))
+
+tbg_diagnostic_t2 %>% 
+  ggplot(aes(x = stage, y = value, fill = stage))+
+  geom_boxplot()+
+  scale_fill_manual(values = c("grey40","#982D80FF","#5F187FFF","#f8765cff","#FEBA80FF","#395d9cff","#3497A9FF"))+
+  ggtitle("Total Detected Tbg Diagnostic Peptides per Patient")+
+  ylab("# Peptides")+
+  scale_y_continuous(limits = c(0, 30))+
+  theme_bw()+
+  theme(legend.position = "none")
+
+```
+
+***
+# Supplemental Figures 6 and 7
+***
+
+## S6A
+
+rHAT predictive model variable importance
+```{r}
+
+hm_tbr <- 
+final_tbr %>% group_by(names) %>% mutate(temp = sum(Overall)) %>% arrange(-temp) %>% ungroup() %>% dplyr::select(model, names, Overall) %>% pivot_wider(names_from = "model", values_from = "Overall") %>% column_to_rownames(var = "names") %>% as.matrix(.)
+hm_tbr[is.na(hm_tbr)] <- 0
+
+pheatmap(hm_tbr,
+         show_colnames= T,
+         show_rownames = T,
+         cluster_cols = F,
+         cluster_rows = F,
+         #breaks = c(0, 20, 40, 60, 80, 100),
+         col = magma(100),
+         main = "Tbr: Variable Importance"
+         )
+
+```
+
+## S7A
+
+gHAT predictive model variable importance
+
+```{r}
+
+hm_tbg <- 
+final_tbg %>% group_by(names) %>% mutate(temp = sum(Overall)) %>% arrange(-temp) %>% ungroup() %>% dplyr::select(model, names, Overall) %>% pivot_wider(names_from = "model", values_from = "Overall") %>% column_to_rownames(var = "names") %>% as.matrix(.)
+hm_tbg[is.na(hm_tbg)] <- 0
+
+
+pheatmap(hm_tbg,
+         show_colnames= T,
+         show_rownames = T,
+         cluster_cols = F,
+         cluster_rows = F,
+         #breaks = c(0, 20, 40, 60, 80, 100),
+         col = magma(100),
+         main = "Tbr: Variable Importance"
+         )
+
+```
+***
+
+<br><br><br><br>
+
+```{r, echo=FALSE}
+sessionInfo()
+```

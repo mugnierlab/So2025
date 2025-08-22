@@ -1,0 +1,499 @@
+---
+title: "Figure 2"
+author: "Jaime So"
+date: "2025-07-31"
+mail: "jso4@jhmi.edu"
+github: "JSoSci"
+output:
+  html_document:
+    css: ~/rmarkdown_formatting/style.css
+    includes:
+      after_body: ~/rmarkdown_formatting/JSo_Footer.html
+    number_sections: False
+    theme: flatly
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    fig_caption: True
+    df_print: kable
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=12, fig.height=8) 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(readxl)
+library(vegan)
+library(Biostrings)
+library("broom")
+library(kableExtra)
+#BiocManager::install('PCAtools')
+library('PCAtools')
+library(ggbeeswarm)
+library(ggpubr)
+library(matrixStats)
+library(viridis)
+library(table1)
+
+library(ggplot2); theme_set(theme_bw()); theme_update(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+<br><br><br><br>
+
+# Figure 2: Profiling anti-VSG IgG antibody epitopes in gHAT and rHAT cases {.tabset .tabset-fade .tabset-pills}
+***
+
+A broad overview of seropositive peptides. The readout for PhIP-seq is a log2fc value from EdgeR analysis of pairwise comparisons between sample and the distribution of mock IPs. Significantly enriched (seropositive) peptides required read counts ≥100 and BH p-value ≤ 0.05 in at least 2 of the 3 technical replicates run per serum sample. Built a fold change matrix containing the average fc for all technical sample replicates which passed initial library quality control checks. All negative fold change values were set to zero (0) and considered undetected in a sample.
+
+## Load Data
+
+```{r}
+
+# Table of all enriched peptides 
+# sig_final made under specifications: sig hits and raw read count > 100 in at least 2/3 technical replicates
+sig_final <- read_csv("FigureData/sig_peps.csv")
+
+# calculate seroprevalence by cohort
+plot_data <- sig_final %>% dplyr::select(Peptide, sample) %>% 
+  distinct() %>% mutate(status = case_when(grepl("Pg", .$sample)~"Infected Tbg",
+                                  grepl("Pr", .$sample)~"Infected Tbr",
+                                  grepl("Cg", .$sample)~"Uninfected Tbg",
+                                  grepl("Cr", .$sample)~ "Uninfected Tbr",
+                                  grepl("NC", .$sample)~"Non-Endemic Ctl"),
+                        stage = case_when(grepl("Pg1", .$sample)~"Pg1",
+                                          grepl("Pg2", .$sample)~"Pg2",
+                                          grepl("Pr1", .$sample)~"Pr1",
+                                          grepl("Pr2", .$sample)~"Pr2",
+                                          grepl("Cg", .$sample)~"Cg",
+                                          grepl("Cr", .$sample)~ "Cr",
+                                          grepl("NC", .$sample)~"Cn")) %>% 
+  group_by(stage, Peptide) %>%
+  mutate(n = n())
+
+plot_data <- merge(plot_data, plot_data %>% ungroup() %>%select(sample, stage) %>% distinct() %>% group_by(stage) %>% summarise(total = n())) %>% mutate(seroprevalence = (n/total)*100)
+
+
+# matrix of the avg fold changes by sample for all detected peptides
+mds_data <- read_csv("FigureData/fc_mat.csv")
+# make peptide column (last) the rownames of the matrix
+peps <- mds_data$Peptide
+mds_data <- mds_data[ , -353]
+mds_data <- sapply(mds_data, as.numeric)
+rownames(mds_data) <- peps
+mds_data <- mds_data[which(rowSums(mds_data) > 0), ]
+mds_data <- as.matrix(mds_data)
+
+```
+
+
+# A
+***
+```{r}
+# calculate means for plotting
+peps_means <- plot_data %>% 
+  group_by(sample) %>% mutate(total = n()) %>% # count total number of enriched peptides per sample
+  dplyr::select(sample, total, stage) %>% distinct() %>% group_by(stage) %>% summarise(avg = mean(total), sd = sd(total))
+colnames(peps_means) <- c("stage", "total", "sd")
+
+# set the order we want to plot the groups
+plot_data$stage <- factor(plot_data$stage, levels = c("Cn", "Cg", "Pg1", "Pg2", "Cr", "Pr1", "Pr2"))
+
+plot_data %>% group_by(sample) %>% mutate(total = n()) %>%
+  dplyr::select(sample, total, stage) %>% distinct() %>%
+  ggplot(aes(x = stage, y = total, fill = stage))+
+  geom_violin(scale = "width") + 
+  geom_quasirandom(size = 0.8) +
+  geom_crossbar(data = peps_means, aes(ymin = total, ymax = total), linewidth = 0.3) +
+  scale_fill_manual(values = c("grey40", "#982D80FF", "#F8765CFF", "#FEBA80FF", "#5F187FFF", "#395D9CFF", "#3497A9FF")) +
+  ylab("Number of Enriched Peptides") +   
+  stat_compare_means(comparisons = list( c("Cg", "Pg1"), c("Cg", "Pg2"), c("Pg1", "Pg2"), c("Cr", "Pr1"), c("Cr", "Pr2"), c("Pr1", "Pr2"))) +
+  theme(text = element_text(size=20)) +
+  ggtitle("Total Number of Significantly Enriched Peptides per Patient") +
+  theme_bw() + theme(legend.position = "none")
+
+```
+
+# B
+***
+```{r}
+
+# do pca on a filtered matrix using peptides with >=5% seroprevalence w/in a cohort
+pca_filter <- plot_data %>% filter(seroprevalence >= 5) %>% .$Peptide %>% unique()
+
+# sample ATB-05-01-C-004_Cr was thrown out during library quality control because only one replicate was of sufficient depth and coverage, remove it from the matrix
+
+#metadata
+mds_meta <- plot_data %>% select(sample, status, stage) %>% distinct()
+mds_meta$stage <- factor(mds_meta$stage, levels = c("Cn", "Cg", "Pg1", "Pg2", "Cr", "Pr1", "Pr2"))
+
+bray_mat <- vegan::vegdist(t(mds_data[pca_filter, unique(mds_meta$sample)]), method = "bray") %>% as.matrix() %>% as.data.frame()
+
+## PCoA of the distance matrix
+bray.mds =  cmdscale(bray_mat, eig=TRUE, x.ret=TRUE)
+bray.mds.var.per <- round(bray.mds$eig/sum(bray.mds$eig)*100, 1)
+bray.mds.values <- bray.mds$points
+bray.mds.data <- data.frame(sample=rownames(bray.mds.values),
+  X=bray.mds.values[,1],
+  Y=bray.mds.values[,2])
+
+ggplot(data=bray.mds.data %>%
+         left_join(mds_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=samplename,
+           color = stage))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", bray.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", bray.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis Dissimilarity") + 
+  scale_color_manual(values = c("grey40", "#5F187FFF", "#F8765CFF", "#FEBA80FF", "#982D80FF", "#395D9CFF", "#3497A9FF")) +
+  theme_bw()
+
+```
+
+# C
+***
+```{r}
+# dodge histograms instead of stacking or overlaying
+hist <- sig_final %>% dplyr::select(Peptide, sample) %>% 
+  distinct() %>% mutate(status = case_when(grepl("Pg", .$sample)~"Infected Tbg",
+                                  grepl("Pr", .$sample)~"Infected Tbr",
+                                  grepl("Cg", .$sample)~"Uninfected Tbg",
+                                  grepl("Cr", .$sample)~ "Uninfected Tbr",
+                                  grepl("NC", .$sample)~"Non-Endemic Ctl")) %>% 
+  group_by(status, Peptide) %>%
+  mutate(n = n())
+
+hist <- merge(hist, hist %>% ungroup() %>%select(sample, status) %>% distinct() %>% group_by(status) %>% summarise(total = n())) %>% mutate(seroprevalence = (n/total)*100) %>% 
+  select(Peptide, status, seroprevalence) %>% distinct()
+
+hist <- hist %>% mutate(bin = case_when(seroprevalence < 10 ~ "0-10",
+                                        seroprevalence >= 10 & seroprevalence < 20 ~ "10-20",
+                                        seroprevalence >= 20 & seroprevalence < 30 ~ "20-30",
+                                        seroprevalence >= 30 & seroprevalence < 40 ~ "30-40",
+                                        seroprevalence >= 40 & seroprevalence < 50 ~ "40-50",
+                                        seroprevalence >= 50 & seroprevalence < 60 ~ "50-60",
+                                        seroprevalence >= 60 & seroprevalence < 70 ~ "60-70",
+                                        seroprevalence >= 70 & seroprevalence < 80 ~ "70-80",
+                                        seroprevalence >= 80 & seroprevalence < 90 ~ "80-90",
+                                        seroprevalence >= 90 & seroprevalence < 100 ~ "90-100"))
+hist$status <- factor(hist$status, levels = c("Non-Endemic Ctl", "Uninfected Tbg", "Infected Tbg", "Uninfected Tbr", "Infected Tbr"))
+hist$bin <- factor(hist$bin)
+hist <- hist %>% group_by(status, bin, .drop=FALSE) %>% tally()
+
+hist %>% ungroup() %>%
+  filter((status == "Non-Endemic Ctl" | status == "Infected Tbg" | status == "Uninfected Tbg")) %>%
+  ggplot(aes(x = bin, y = n+0.1, fill = status, colour = status)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.95), alpha = 0.7) +
+  theme_bw() +
+  scale_y_log10("Frequency", limits = c(1,1e5)) + 
+  xlab("Peptide Seroprevalence") +
+  scale_fill_manual(values = c("grey40", "#982D80FF", "#FEBA80FF")) +
+  scale_color_manual(values = c("grey40", "#982D80FF", "#FEBA80FF")) +
+  theme(legend.position="top")
+
+```
+
+## Supplementary Table S1
+
+Show that the seroprevalent peptides are distributed among different regions
+```{r}
+# patient metadata
+HATmeta <- read_xlsx(path = "FigureData/2023_HATData_MMugnier_2023_0427.xlsx", sheet = "Serology_Parasitological_Data", col_names = T, skip = 1)
+colnames(HATmeta) <- c("ID", "sex", "age", "stage", "country", "center", "CATT_whole", "CATT_quarter", "CATT_titer", "Thick_smear", "CTC_blood", "mAECT_blood", "lymph_node_puncture", "CSF_direct", "CSF_2xCent", "CSF_1xCent", "Trypanolysis_TL", "LiTat1.3_TL", "LiTat1.5_TL", "Combined_TL", "CSF_WBC", "Hemorrhagic_CSF", "CSF_RBC")
+# match by sample name
+HATmeta$ID <- gsub("/", "-", HATmeta$ID)
+HATmeta <- HATmeta %>% unite("sample", c(ID, stage), sep = "_", remove = F)
+
+# total cohort sizes
+HATmeta %>% group_by(country, stage) %>% dplyr::count()
+
+sero_dist <- sig_final %>% dplyr::select(Peptide, sample) %>% 
+  distinct() %>% mutate(status = case_when(grepl("Pg", .$sample)~"Infected Tbg",
+                                  grepl("Pr", .$sample)~"Infected Tbr",
+                                  grepl("Cg", .$sample)~"Uninfected Tbg",
+                                  grepl("Cr", .$sample)~ "Uninfected Tbr",
+                                  grepl("NC", .$sample)~"Non-Endemic Ctl")) %>% 
+  group_by(status, Peptide) %>%
+  mutate(n = n())
+
+sero_dist <- merge(sero_dist, sero_dist %>% ungroup() %>%select(sample, status) %>% distinct() %>% group_by(status) %>% summarise(total = n())) %>%
+  mutate(seroprevalence = (n/total)*100) %>% filter(status == "Infected Tbg" & seroprevalence >= 70) %>%
+  select(Peptide, sample, seroprevalence) %>% distinct() %>%
+  inner_join(HATmeta, by = "sample")
+
+# all gHAT samples are represented at least once by these 40 peptides
+sero_dist %>% select(sample, country) %>% distinct() %>% group_by(country) %>% dplyr::count()
+
+tableS1 <- sero_dist %>% select(Peptide, sample, country) %>% distinct() %>% group_by(Peptide, country) %>% dplyr::count() %>% pivot_wider (names_from = country, values_from = n)
+kbl(tableS1)
+
+```
+
+# D
+***
+```{r}
+hist %>% filter((status == "Non-Endemic Ctl" | status == "Infected Tbr" | status == "Uninfected Tbr")) %>% 
+  ggplot(aes(x = bin, y = n+0.1, fill = status, colour = status)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.95), alpha = 0.7) +
+  theme_bw() +
+  scale_y_log10("Frequency", limits = c(1,1e5)) + 
+  xlab("Peptide Seroprevalence") +
+  scale_fill_manual(values = c("grey40", "#5F187FFF", "#3497A9FF")) +
+  scale_color_manual(values = c("grey40", "#5F187FFF", "#3497A9FF")) +
+  theme(legend.position="top")
+
+```
+
+
+# Supplemental Figure 3 & 4
+
+```{r}
+
+# prepare relevant metadata: disease severity
+
+severity <- read_xlsx(path = "FigureData/2023_HATData_MMugnier_2023_0427.xlsx", sheet = "General_Clinical_Data", col_names = T, skip = 1)[,1:18]
+colnames(severity) <- c("ID", "sex", "age", "country", "center", "stage", "high_risk", "condition", "duration", "fever", "faintness", "weightloss", "swolen_lymph_node", "neurological_signs", "edema", "apetite_loss", "other", "number_other_signs")
+
+severity$ID <- gsub("/", "-", severity$ID)
+severity <- severity %>% unite("sample", c(ID,stage), sep = "_", remove = F)
+severity$sex <- case_when(severity$sex == "Féminin" ~ "Female",
+                         severity$sex == "Masculin" ~ "Male",
+                         TRUE ~ "no data")
+severity$condition <- case_when(severity$condition == "Légèrement malade" ~ "slightly sick",
+                                severity$condition == "Pas malade" ~ "not sick",
+                                severity$condition == "Modérément malade" ~ "moderately sick",
+                                severity$condition == "Gravement malade" ~ "very sick",
+                                TRUE ~ "no data")
+
+
+# symptom surveys differ based on testing center so break up the data table summarise by center
+summary(as.factor(severity$center))
+
+HATmeta %>% filter(grepl("P", ID)) %>% .$center %>% unique()
+
+Dipumba <- severity %>% filter(center =="Dipumba" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Rumphi <- severity %>% filter(center =="Rumphi (Neurotryp)" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Forecariah <- severity %>% filter(center =="Forecariah" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Katanda <- severity %>% filter(center =="Katanda" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Lwala <- severity %>% filter(center =="Lwala" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Mandoul <- severity %>% filter(center =="Mobile team PNLTHA (Mandoul)" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Tshilenge <- severity %>% filter(center =="Tshilenge" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Kaliua <- severity %>% filter(center =="Kaliua" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+Miabi <- severity %>% filter(center =="Miabi" & grepl("P", ID)) %>% .[ , c(1,11:17,19)]
+
+# replace NA with 0
+Dipumba[is.na(Dipumba)] <- 0
+Rumphi[is.na(Rumphi)] <- 0
+Forecariah[is.na(Forecariah)] <- 0
+Katanda[is.na(Katanda)] <- 0
+Lwala[is.na(Lwala)] <- 0
+Mandoul[is.na(Mandoul)] <- 0
+Tshilenge[is.na(Tshilenge)] <- 0
+Kaliua[is.na(Kaliua)] <- 0
+Miabi[is.na(Miabi)] <- 0
+
+
+symptoms <- rbind(data.frame(sample = Dipumba$sample, symptoms = rowSums(Dipumba[ , 2:9])),
+      data.frame(sample = Rumphi$sample, symptoms = rowSums(Rumphi[ , 2:9])),
+      data.frame(sample = Forecariah$sample, symptoms = rowSums(Forecariah[ , 2:9])),
+      data.frame(sample = Katanda$sample, symptoms = rowSums(Katanda[ , 2:9])),
+      data.frame(sample = Lwala$sample, symptoms = rowSums(Lwala[ , 2:9])),
+      data.frame(sample = Mandoul$sample, symptoms = rowSums(Mandoul[ , 2:9])),
+      data.frame(sample = Tshilenge$sample, symptoms = rowSums(Tshilenge[ , 2:9])),
+      data.frame(sample = Kaliua$sample, symptoms = rowSums(Kaliua[ , 2:9])),
+      data.frame(sample = Miabi$sample, symptoms = rowSums(Miabi[ , 2:9])))
+
+
+# Infected Only PCA Plots
+PCA_meta <- inner_join(symptoms, severity, by = 'sample')
+infected <- grep("-P-", colnames(mds_data))
+
+PCA_meta$condition <- factor(PCA_meta$condition, levels = c("very sick", "moderately sick", "slightly sick", "not sick", "no data"))
+
+### tbg Infected Only
+
+tbg_mat <- vegan::vegdist(t(mds_data[pca_filter, grep("Pg", colnames(mds_data))]), method = "bray") %>% as.matrix() %>% as.data.frame()
+
+## PCoA of the distance matrix - thanks stats quest
+tbg.mds =  cmdscale(tbg_mat, eig=TRUE, x.ret=TRUE)
+tbg.mds.var.per <- round(tbg.mds$eig/sum(tbg.mds$eig)*100, 1)
+tbg.mds.values <- tbg.mds$points
+tbg.mds.data <- data.frame(sample=rownames(tbg.mds.values),
+  X=tbg.mds.values[,1],
+  Y=tbg.mds.values[,2])
+
+g1 <- ggplot(data=tbg.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = stage))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbg.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbg.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbg Infected") + 
+  scale_color_manual(values = c("#F8765CFF", "#FEBA80FF")) +
+  theme_bw()
+
+g2 <- ggplot(data=tbg.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = center))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbg.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbg.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbg Infected") + 
+  scale_color_viridis(discrete = T) +
+  theme_bw()
+
+g3 <- ggplot(data=tbg.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = symptoms))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbg.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbg.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbg Infected") + 
+  scale_color_continuous(type = "gradient") +
+  theme_bw()
+
+g4 <- ggplot(data=tbg.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = condition))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbg.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbg.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbg Infected") + 
+  scale_color_viridis(option = "C", discrete = T) +
+  theme_bw()
+
+### Tbr Infected Only
+
+tbr_mat <- vegan::vegdist(t(mds_data[pca_filter, grep("Pr", colnames(mds_data))]), method = "bray") %>% as.matrix() %>% as.data.frame()
+
+## PCoA of the distance matrix - thanks stats quest
+tbr.mds =  cmdscale(tbr_mat, eig=TRUE, x.ret=TRUE)
+tbr.mds.var.per <- round(tbr.mds$eig/sum(tbr.mds$eig)*100, 1)
+tbr.mds.values <- tbr.mds$points
+tbr.mds.data <- data.frame(sample=rownames(tbr.mds.values),
+  X=tbr.mds.values[,1],
+  Y=tbr.mds.values[,2])
+
+r1 <- ggplot(data=tbr.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = stage))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbr.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbr.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbr Infected") + 
+  scale_color_manual(values = c("#395D9CFF", "#3497A9FF")) +
+  theme_bw()
+
+r2 <- ggplot(data=tbr.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = center))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbr.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbr.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbr Infected") + 
+  scale_color_manual(values = c("#440154FF", "#2A788EFF", "#7AD151FF")) +
+  theme_bw()
+
+r3 <- ggplot(data=tbr.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = symptoms))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbr.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbr.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbr Infected") + 
+  scale_color_continuous(type = "gradient") +
+  theme_bw()
+
+r4 <- ggplot(data=tbr.mds.data %>%
+         left_join(PCA_meta, by = "sample"),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = condition))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", tbr.mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", tbr.mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Bray-Curtis distance: Tbr Infected") + 
+  scale_color_viridis(option = "C", discrete = T) +
+  theme_bw()
+
+severity_tables <- PCA_meta
+label(severity_tables$symptoms) <- "# Symptoms"
+label(severity_tables$center) <- "Collection Site"
+label(severity_tables$country) <- "Country"
+
+# make scatterplot of reactivity vs # symptoms for gambiense only (tbr confounded by Malawi collections)
+
+```
+
+## S3A
+```{r}
+#extended metadata table
+table1(~ sex + age + stage + symptoms | country*center, data = (severity_tables %>% filter(grepl("Pg", sample))), overall = F)
+```
+
+## S3B
+```{r}
+# plot colored by # symptoms
+g3
+```
+
+## S3C
+```{r}
+# plot colored by collection site
+g2
+```
+
+## S4A 
+```{r}
+table1(~ sex + age + stage + symptoms | country*center, data = (severity_tables %>% filter(grepl("Pr", sample))), overall = F)
+```
+
+## S4B
+
+```{r}
+r1
+```
+
+## S4C
+```{r}
+r2
+```
+
+## S4C
+```{r}
+r4
+```
+
+<br><br><br><br>
+
+```{r, echo=FALSE}
+sessionInfo()
+```

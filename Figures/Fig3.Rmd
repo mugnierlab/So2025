@@ -1,0 +1,511 @@
+---
+title: "Figure 3"
+author: "Jaime So"
+date: "2025-08-04"
+mail: "jso4@jhmi.edu"
+github: "JSoSci"
+output:
+  html_document:
+    css: ~/rmarkdown_formatting/style.css
+    includes:
+      after_body: ~/rmarkdown_formatting/JSo_footer.html
+    number_sections: False
+    theme: flatly
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    fig_caption: True
+    df_print: kable
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(tidyverse)
+library(cowplot)
+library(pheatmap)
+library(RColorBrewer)
+library(ggplot2); theme_set(theme_bw()); theme_update(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+<br><br><br><br>
+
+# Figure 3: PhIP-seq reveals common targets of anti-VSG immunity.
+
+<br><br><br><br>
+
+# A
+***
+stacked bar charts show the frequencies of enriched tile types
+
+```{r}
+# load in significantly enriched peptides
+sig_peps <- read_csv("FigureData/sig_peps.csv")
+
+plot_data <- sig_peps %>% dplyr::select(Peptide, sample) %>% 
+  distinct() %>% mutate(status = case_when(grepl("Pg", .$sample)~"Tbg Positive",
+                                  grepl("Pr", .$sample)~"Tbr Positive",
+                                  grepl("Cg", .$sample)~"Tbg Negative",
+                                  grepl("Cr", .$sample)~ "Tbr Negative",
+                                  grepl("NC", .$sample)~"Non-Endemic Ctl"),
+                        stage = case_when(grepl("Pg1", .$sample)~"Pg1",
+                                          grepl("Pg2", .$sample)~"Pg2",
+                                          grepl("Pr1", .$sample)~"Pr1",
+                                          grepl("Pr2", .$sample)~"Pr2",
+                                          grepl("Cg", .$sample)~"Cg",
+                                          grepl("Cr", .$sample)~ "Cr",
+                                          grepl("NC", .$sample)~"Cn")) %>% 
+  group_by(status, Peptide) %>%
+  mutate(n = n())
+
+# filter for peptides that appear in more than one sample
+plot_data <- merge(plot_data, plot_data %>% ungroup() %>%select(sample, status) %>% distinct() %>% group_by(status) %>% summarise(total = n())) %>% mutate(seroprevalence = (n/total)*100) %>% filter(seroprevalence >= 5)
+
+# load in VSG tile annotations
+VSG_info <- read_csv("FigureData/VSG_Tile_Classification.csv") %>% 
+  mutate(class = case_when(nterm_typesubtype == "1a" ~ "A1", 
+                           nterm_typesubtype == "1b" ~ "A1",
+                           nterm_typesubtype == "1c" ~ "A1",
+                           HMM_profile == "VSG-N-TypeB" | nterm_typesubtype == "B1" ~ "B",
+                           TRUE ~ .$nterm_typesubtype))
+# simplify by grouping all of the A1 subtypes (1a, 1b, 1c) together into just 1a. B is designated as B1 even though there are no well-established B subtypes
+
+
+# if a peptide tile is N-terminal, group by NTD class
+
+# the fold change matrix contains all detected library tiles
+lib_peps <- read_csv("FigureData/fc_mat.csv") %>% .$Peptide
+unenriched <- VSG_info %>% filter(pep_id %in% lib_peps) %>% mutate(stack_class = case_when(pep_region == "N-terminal" ~ class,
+                                                                                                  TRUE ~ pep_region)) %>% group_by(stack_class) %>% summarise(n = n())
+sig_tbg <- plot_data %>% filter(status == "Tbg Positive") %>% select(Peptide) %>% distinct()  
+tbg_enriched<- VSG_info %>% filter(pep_id %in% sig_tbg$Peptide) %>% mutate(stack_class = case_when(pep_region == "N-terminal" ~ class,
+                                                                                                  TRUE ~ pep_region)) %>% group_by(stack_class) %>% summarise(n = n())
+
+sig_tbr <- plot_data %>% filter(status == "Tbr Positive") %>% select(Peptide) %>% distinct()
+tbr_enriched<- VSG_info %>% filter(pep_id %in% sig_tbr$Peptide) %>% mutate(stack_class = case_when(pep_region == "N-terminal" ~ class,
+                                                                                                  TRUE ~ pep_region)) %>% group_by(stack_class) %>% summarise(n = n())
+
+sig_nc <- plot_data %>% filter(status == "Non-Endemic Ctl") %>% select(Peptide) %>% distinct()
+nc_enriched<- VSG_info %>% filter(pep_id %in% sig_nc$Peptide) %>% mutate(stack_class = case_when(pep_region == "N-terminal" ~ class,
+                                                                                                  TRUE ~ pep_region)) %>% group_by(stack_class) %>% summarise(n = n())
+
+sig_cg <- plot_data %>% filter(status == "Tbg Negative") %>% select(Peptide) %>% distinct()  #& seroprevalence >= 10
+cg_enriched<- VSG_info %>% filter(pep_id %in% sig_cg$Peptide) %>% mutate(stack_class = case_when(pep_region == "N-terminal" ~ class,
+                                                                                                  TRUE ~ pep_region)) %>% group_by(stack_class) %>% summarise(n = n())
+
+sig_cr <- plot_data %>% filter(status == "Tbr Negative") %>% select(Peptide) %>% distinct()
+cr_enriched<- VSG_info %>% filter(pep_id %in% sig_cr$Peptide) %>% mutate(stack_class = case_when(pep_region == "N-terminal" ~ class,
+                                                                                                  TRUE ~ pep_region)) %>% group_by(stack_class) %>% summarise(n = n())
+
+stacked <- rbind(unenriched %>% mutate(lib = "Phage"),
+                 nc_enriched %>% mutate(lib = "Non-Endemic"),
+                 cg_enriched %>% mutate(lib = "Tbg Neg"),
+                 cr_enriched %>% mutate(lib = "Tbr Neg"),
+                 tbg_enriched %>% mutate(lib = "Tbg"),
+                 tbr_enriched %>% mutate(lib = "Tbr")) %>% 
+  group_by(lib) %>%
+  mutate(Percent = round((n/sum(n))*100, 1))
+stacked$lib <- factor(stacked$lib, levels = c("Phage", "Non-Endemic", "Tbg", "Tbg Neg", "Tbr", "Tbr Neg"))
+
+ggplot(stacked, aes(x=lib, y=Percent, fill=stack_class))+
+  geom_bar(stat="identity")+
+  labs(x = NULL, y = "Percent VSG", fill = "Peptide Origin")+
+geom_text(aes(label = paste0(Percent, "%")), position = position_stack(vjust=0.5))+
+  theme_bw(base_size = 22)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  scale_fill_manual(values = c("#9EC3E0", "#2A84C6", "#A1324D", "#46337EFF", "grey70"))
+
+# make contingency table and perform a chi-sq test to see if frequencies differ between groups
+contingency <- stacked %>% select(lib, stack_class, n) %>% .$n %>% matrix(., nrow = 5, ncol = 6, byrow = F, dimnames = list(c("A1", "A2", "B", "C-terminal", "Indeterminate"), c("Phage", "Control", "TbgNeg", "TbrNeg", "Tbg", "Tbr")))
+
+contingency
+# null: frequency of enriched peptides do not differ from library
+# phage represent the expected frequency of each peptide type
+libexpect <- stacked %>% filter(lib == "Phage") %>% .$Percent/100
+chisq_res <- chisq.test(contingency[ , 2:6], p = libexpect)
+print(chisq_res)
+print(round(chisq_res$residuals, 2))
+# residuals indicate how different the observed counts are from expected, with a larger positive or negative number (further from 0) indicating larger difference
+
+# Calculate relative contribution to chi-square statistic
+contributions <- (chisq_res$observed - chisq_res$expected)^2 / chisq_res$expected
+total_chi_square <- chisq_res$statistic
+percentage_contributions <- 100 * contributions / total_chi_square
+
+# percent contribution
+print(round(percentage_contributions, 2))
+
+pheatmap_color <- colorRampPalette(brewer.pal(n=11, name = "RdBu"))(50)
+pheatmap(round(chisq_res$residuals, 2), 
+         cluster_rows = F,
+         cluster_cols = F,
+         col = pheatmap_color
+         )
+
+```
+
+The peptides enriched in Tbg infected cohort contribute the most to the chi-sq statistic. Non endemic controls, endemic controls for both tbg and tbr cohorts, and the Tbr positive cohort are all not very meaningfully different from phages. Significantly more type B NTD peptides enrich in Tbg positive samples while there are lower than expected counts of type A1 NTD and CTD peptides.
+
+***
+
+# Mapping and Plotting Putative Epitopes {.tabset .tabset-fade .tabset-pills}
+***
+
+Epitopes were determined using an igraph network building approach which clustered peptides based on presence of shared homologous sequence. We pulled the shared sequences from these peptide clusters and defined them as putative epitopes. Sets of enriched epitopes were defined for each individual patient. Since the library contains many sequences from incomplete VSG (protein fragments/pseudogenes) the tile coordinates do not always directly correspond to VSG structural features. This is why we decided to map epitopes back to full length VSG to identify regions of highest immunogenicity. 
+
+
+## ProteoMapper
+
+terminal commands for running proteoMapper
+```{r, eval=FALSE}
+# txt files generated containing the motifs identified for each sample
+# filenames: sampleID_motif_sequences.txt
+# each line of the motif txt file contains a  motif sequence
+
+# index VSG fasta file as mapping reference
+# Use the fasta of all VSG sequences used to produce library tiles
+~/clips.pl -V ../All_tiled_VSG.fasta
+
+# map each motif fasta to the indexed VSG reference
+for FILE in *_motif_sequences.txt
+do
+        perl ~/promast.pl -f 1 All_tiled_VSG.fasta $FILE > $FILE.tsv
+done
+
+# concatenate all proteomapper outputs into a single table containing peptide sequence, ref protein hit, and location which is the mapping start coordinate
+# be sure to also record sample IDs in the combined table
+```
+
+proteomapper output includes all input sequences in the output report, if they failed to map to reference they will be designated "UNMAPPED" instead of indicating protein
+
+## Recover unmapped with BLASTp
+
+terminal blast command
+```{r,eval=FALSE}
+$ blastp -subject All_tiled_VSG.fasta -query unmapped_motif_sequences.fasta -out unmapped_motifs_Blastp.csv -outfmt "10 qseqid sseqid sstart send evalue"
+```
+
+parse outputs in R
+```{r, eval=FALSE}
+unmapped <- proteomapper %>% filter(protein == "UNMAPPED")
+# write unmapped sequences to a fasta file
+test <- data.frame(fasta_id = as.character(), 
+                   sequence = as.character())
+for (i in 1:length(unique(unmapped$sample))){
+  x <- unmapped %>% filter(sample == unique(unmapped$sample)[i])
+  x$id <- paste(rep("motif", nrow(x)), c(1:nrow(x)), sep = "_")
+  x$fasta_id <- paste(x$clustername, x$id, sep = "_")
+  test <- rbind(test, x %>% select(fasta_id, sequence))
+}
+
+y <- AAStringSet(test$sequence)
+names(y) <- test$fasta_id
+writeXStringSet(y, filepath = "unmapped_motif_sequences.fasta", append=FALSE, compress=FALSE, compression_level=NA, format="fasta")
+
+unmapped_res <- read_csv("unmapped_motifs_Blastp.csv", col_names = F) 
+colnames(unmapped_res) <- c("motif_id", "protein", "start", "end", "evalue")
+
+unmapped_res <- unmapped_res %>% filter(evalue < 0.001)
+unmapped_res$clustername <- str_split_fixed(unmapped_res$motif_id, "_motif", 2)[, 1]
+unmapped_res$sample <- str_split_fixed(unmapped_res$clustername, "_(?=[^_]+$)", 2)[, 1]
+
+# there are 16835 sequences in the file "unmapped_motif_sequences.fasta"
+# how many peptides now remain unmapped?
+unique(unmapped_res$motif_id) %>% length() 
+# 1309 motifs still fail to map with evalue cutoff of 0.001
+# a very small proportion of the total motifs identified
+
+```
+
+## Cd-hit Clustering
+
+Repetitive, highly similar VSG may skew the mapping results. Collapse highly similar VSGs into a single representative with cd-hit so those are only counted one time. We are most bothered with VSGs that are essentially exactly the same, so cluster by a high identity threshold.
+
+```{r, eval=FALSE}
+
+# example console command for 90% peptide identity clustering from cd-hit wiki
+% cd-hit -i db    -o db_90 -c 0.9 -n 5 -g 1 -G 0 -aS 0.8  -d 0 -p 1 -T 16 -M 0 > db_90.log
+
+# the command I used to cluster highly similar full VSG sequences from the motif map reference fasta used to generate tiles
+% cd-hit -i All_tiled_VSG.fasta -o clustered_VSG.fasta -c 0.95 -G 0 -g 1 -aS 0.8 -n 5 -d 0 -M 0 -p 1
+
+# note that the representative sequence reported by cd-hit will always be the longest one
+# cluster members must cover at least 80% of the representative sequence (-aS 0.8) at 95% identity (-c 0.95)
+
+# the fasta file cdhit output contains only representative sequences
+# print these ids and filter dataframes of mapped motifs to exclude all the clustered VSGS that are essentially exactly the same
+filter_VSG <- read_table("FigureData/clustered_VSG_representativeID.txt", col_names = F) %>% select(X1)
+colnames(filter_VSG) <- "VSGid"
+
+filter_VSG$VSGid <- sub(">", "", filter_VSG$VSGid)
+```
+
+
+## Combine and Summarize
+```{r, eval = FALSE}
+# combine the dataframes for all motif alignments: proteomapper output, blastp output, and singleton tile info
+VSG_cov <- rbind(unmapped_res %>% select(sample, protein, start, end),
+proteomapper %>% filter(!protein == "UNMAPPED") %>% select(sample, protein, start, end)) %>%
+  rbind(singletons %>% select(sample, protein, start, end))
+
+# find the length of each VSG
+VSG_len <- read_csv("FigureData/VSG_Tile_Classification.csv") %>% filter(pro_id %in% unique(VSG_cov$protein)) %>% dplyr::rename("protein"="pro_id")
+
+# function for reading and summarizing coverage output - produces ranges for each patient which can be plotted
+MotifMap <- function(inputname){
+  x <- VSG_cov %>% filter(sample == inputname)
+  y <- VSG_len %>% filter(protein %in% unique(x$protein))
+  # use iranges package for visualization
+  plotR <- data.frame(start = double(),
+                      end = double(),
+                      width = double(),
+                      seq_ID = character())
+  for (i in 1:length(y$protein)) {
+    irR <- IRanges(x[x$protein == y$protein[i], ] %>%
+                   select(protein, start, end) %>%
+                   distinct() %>%
+                   .$start,
+                 end = x[x$protein == y$protein[i], ] %>%
+                   select(protein, start, end) %>%
+                   distinct() %>%
+                   .$end)
+    # collapse overlapping regions to calculate seq_ID coverage
+    cov <- IRanges::reduce(irR) %>% as.data.frame()
+    cov <- cov %>% mutate(protein = y$protein[i])
+    plotR <- rbind(plotR, cov)
+    }
+  plotR$sample <- inputname
+  plotR <- merge(plotR, y)
+  return(plotR)
+}
+
+# summarise ranges for all samples
+# write results to a file instead of using memory
+for (i in 1:length(unique(VSG_cov$sample))){
+  test <- MotifMap(unique(VSG_cov$sample)[i]) %>% filter(protein %in% filter_VSG$VSGid) # filter to exclude redundant VSG
+  write_csv(test, file = "all_samples_mapped_ranges.csv", append = T)
+}
+
+
+```
+
+
+## Mapping Results
+
+```{r}
+
+VSGs_mapped <- read_csv("FigureData/all_samples_mapped_ranges.csv", col_names = T)
+
+# add disease stage column
+VSGs_mapped <- VSGs_mapped %>% mutate(stage = case_when(grepl("Pg1", .$sample)~"Pg1", 
+                                                        grepl("Pg2", .$sample)~"Pg2",
+                                                        grepl("Pr1", .$sample)~"Pr1",
+                                                        grepl("Pr2", .$sample)~"Pr2",
+                                                        grepl("Cg", .$sample)~"Cg",
+                                                        grepl("Cr", .$sample)~ "Cr",
+                                                        grepl("NC", .$sample)~"Cn"))
+
+```
+
+
+## Calculate VSG coverage
+
+Made a function that counts overlapping ranges along the full VSG protein sequence by group for a specified VSG. Right now it groups by disease stage/cohort.
+Function summarizes one VSG at a time, but works quickly and can easily iterate through larger lists of VSGs.
+
+Goal: Map positions and color by group. Start off grouping by disease stage. Make coverage histograms for all VSGs, then normalize. 
+
+```{r, eval=FALSE}
+
+cov_histogram <- function(mapdf, meta, VSGname){
+  x <- mapdf %>% filter(protein == VSGname)
+  x <- merge(x, meta)
+  y <- mapdf %>% filter(protein == VSGname) %>% select(protein, seq_length, nterm_seq_length) %>% distinct()
+  # use iranges package for visualization
+  plotR <- data.frame(value = double(),
+                      position = double(),
+                      stage = character())
+  for (i in 1:length(unique(x$stage))) {
+    irR <- IRanges(x[x$stage == unique(x$stage)[i], ] %>%
+                   .$start,
+                 end = x[x$stage == unique(x$stage)[i], ] %>%
+                   .$end)
+    # count overlaps
+    cov <- IRanges::coverage(irR) %>% as.data.frame()
+    cov <- cov %>% mutate(position = rownames(cov), stage = unique(x$stage)[i]) 
+    plotR <- rbind(plotR, cov)
+    }
+  plotR <- plotR %>% mutate(protein = VSGname)
+  plotR <- merge(plotR, y)
+  return(plotR)
+}
+
+# example
+
+## subtype A1a
+A1a <- VSGs_mapped %>% select(protein, subtype) %>% distinct() %>% filter(subtype == "1a") %>% .$protein
+## look at coverage for all type A1a VSG by disease status
+A1a_histograms <- data.frame(protein = as.character(),
+                             value = as.double(),
+                             position = as.double(),
+                             stage = as.character(),
+                             seq_length = as.double(),
+                             nterm_seq_length = as.double())
+## iterate through the list of type A1a VSGs
+for (i in 1:length(A1a)){
+  test <- cov_histogram(VSGs_mapped, map_meta, A1a[i])
+  A1a_histograms <- rbind(A1a_histograms, test)
+}
+
+#dataframe A1a_histograms is the raw coverage output for all Type A1a VSG
+# it counts ("value" column) the number of samples per disease stage with hits at each position along the VSG
+# normalize position by subtracting the NTD coordinate
+A1a_histograms$position <- as.double(A1a_histograms$position)
+A1a_histograms$position_norm <- A1a_histograms$position - A1a_histograms$nterm_seq_length
+# since calculating this took an eternity, write result to a csv
+
+# make data frames for all VSG NTD subtypes and concatenate them to produce final coverage dataframe
+# normalize counts by patient cohort size and the total number of enriched VSGs per NTD type
+
+```
+
+***
+# B
+***
+
+Tbr is something of a negative result since we cannot model the CTD, where mapped Tbr epitopes are the most seroprevalent, with high confidence using colabfold. Show the full dataset with all cohorts in the supplement and highlight the NTD epitope enrichment demonstrated by Tbg as a main figure. Simplify by plotting only the delta between gHAT and non-endemic control signal. We will only be modeling NTD monomers, so exclude showing mapping to the CTD to avoid confusion.
+
+```{r}
+
+mapped_epitopes <- read_csv("FigureData/all_mapped_epitopes_normalized.csv")
+
+# Identify the most seroprevalent full-length VSGs per type and cohort to use for alphafold modeling purposes
+
+cohorts <- VSGs_mapped %>% select(sample, stage) %>% distinct() %>% group_by(stage) %>% summarise(stage_total = n())
+mapped_sero <- VSGs_mapped %>% select(protein, sample, stage) %>% distinct()
+stage_mapped_sero <- merge(mapped_sero %>% group_by(stage, protein) %>% summarise(n_stage = n()), cohorts) %>% mutate(seroprevalence = (n_stage/stage_total)*100)
+
+stage_mapped_sero <- inner_join(stage_mapped_sero, VSGs_mapped %>% select(protein, seq_length, nterm_seq_length, subtype) %>% distinct(), by = "protein")
+
+# find the seroprevalent full-length A1a VSGs to model
+rbind(stage_mapped_sero %>% filter(subtype == "1a" & stage == "Pg1" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10), 
+      stage_mapped_sero %>% filter(subtype == "1a" & stage == "Pg2" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10)) %>%
+  .$protein %>% unique()
+
+# A1b
+rbind(stage_mapped_sero %>% filter(subtype == "1b" & stage == "Pg1" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10), 
+      stage_mapped_sero %>% filter(subtype == "1b" & stage == "Pg2" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10)) %>%
+  .$protein %>% unique()
+
+# A1c
+rbind(stage_mapped_sero %>% filter(subtype == "1c" & stage == "Pg1" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10), 
+      stage_mapped_sero %>% filter(subtype == "1c" & stage == "Pg2" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10)) %>%
+  .$protein %>% unique()
+
+# A2
+rbind(stage_mapped_sero %>% filter(subtype == "A2" & stage == "Pg1" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10), 
+      stage_mapped_sero %>% filter(subtype == "A2" & stage == "Pg2" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10)) %>%
+  .$protein %>% unique()
+
+# B
+rbind(stage_mapped_sero %>% filter(subtype == "B1" & stage == "Pg1" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10), 
+      stage_mapped_sero %>% filter(subtype == "B1" & stage == "Pg2" & nterm_seq_length > 200) %>% arrange(desc(seroprevalence)) %>% head(n=10)) %>%
+  .$protein %>% unique()
+
+# color models using a gradient that represents the difference (fold change) in normalized amplitude between infected cohorts and non-endemic controls
+
+make_gradients <- function(NTDtype, cohort){
+  x <- data.frame(coord = mapped_epitopes %>% filter(subtype == NTDtype, stage == paste0(cohort,"1")) %>% .$position_norm,
+                     stage1 = mapped_epitopes %>% filter(subtype == NTDtype, stage == paste0(cohort,"1")) %>% .$norm_count) %>% 
+  full_join(data.frame(coord = mapped_epitopes %>% filter(subtype == NTDtype, stage == paste0(cohort,"2")) %>% .$position_norm,
+                       stage2 = mapped_epitopes %>% filter(subtype == NTDtype, stage == paste0(cohort,"2")) %>% .$norm_count)) %>%
+  full_join(data.frame(coord = mapped_epitopes %>% filter(subtype == NTDtype, stage == "Cn") %>% .$position_norm,
+                       Cn = mapped_epitopes %>% filter(subtype == NTDtype, stage == "Cn") %>% .$norm_count))
+  x <- x %>% replace(is.na(.), 0)
+  x$avg <- rowMeans(x[ , c(2, 3)])
+  x <- x %>% mutate(color = avg/Cn) %>% select(coord, color)
+  return(x)
+}
+
+TbgA1a <- make_gradients("1a", "Pg")
+TbgA1b <- make_gradients("1b", "Pg")
+TbgA1c <- make_gradients("1c", "Pg")
+TbgA2 <- make_gradients("A2", "Pg")
+TbgB <- make_gradients("B1", "Pg")
+
+# we will need to format this delta value so it can be imported into chimeraX as a mapping attribute for making residue coloring gradients
+
+#write_csv(TbgA1a, file = "TbgA1a_gradient.csv")
+#write_csv(TbgA1b, file = "TbgA1b_gradient.csv")
+#write_csv(TbgA1c, file = "TbgA1c_gradient.csv")
+#write_csv(TbgA2, file = "TbgA2_gradient.csv")
+#write_csv(TbgB, file = "TbgB_gradient.csv")
+
+plot_delta <- rbind(TbgA1a %>% mutate(subtype = "A1a"),
+                    TbgA1b %>% mutate(subtype = "A1b"),
+                    TbgA1c %>% mutate(subtype = "A1c"),
+                    TbgA2 %>% mutate(subtype = "A2"),
+                    TbgB %>% mutate(subtype = "B"))
+# fix the values which are NA or inf(from dividing by 0)
+plot_delta$color <- replace_na(plot_delta$color, 1) 
+plot_delta$color <- replace(plot_delta$color, (plot_delta$color < 1 | plot_delta$color == "Inf") ,1)
+
+plot_delta %>% filter(coord <= 0 & color >= 1) %>%
+  ggplot(aes(x = coord, y = color)) +
+  geom_line(linewidth = 1.4, alpha = 0.7, color = "#F8765CFF") +
+  facet_wrap(~subtype, nrow = 1) +
+  xlab("Position Relative to NTD Boundary") +
+  ylab("Delta (gHAT / non-endemic control)") +
+  theme_bw()
+
+```
+
+***
+
+# Figure S5
+***
+
+To make the plots more generalized and easier to read, plot the NTD boundary as position 0 then calculating positions relative to it so N-terminal spans will be (-) and C-terminal (+). Plot along the full length of the VSG, not just the NTD. Notice how the regions of greatest amplitude of mapped epitopes for rHAT patients tend to be within the CTD.
+
+```{r}
+
+pTbr <- mapped_epitopes %>% filter(stage == "Pr1" | stage == "Pr2" | stage == "Cr" | stage == "Cn") %>%
+  ggplot(aes(x = position_norm, y = norm_count, color = stage)) +
+  geom_line(linewidth = 1.4, alpha = 0.7) +
+  geom_vline(aes(xintercept = 0), linetype = "solid", color = "black", linewidth = 0.6) +
+  scale_color_manual(values = c("grey40", "#5F187FFF", "#395D9CFF", "#3497A9FF")) +
+  #scale_x_continuous() +
+  facet_wrap(~subtype, nrow = 1, scales = "free_y") +
+  #ggtitle("VSG NTD Type") +
+  xlab("Position Relative to NTD Boundary") +
+  ylab("Normalized Count") +
+  theme_bw()
+
+pTbg <- mapped_epitopes %>% filter(stage == "Pg1" | stage == "Pg2" | stage == "Cg" | stage == "Cn") %>%
+  ggplot(aes(x = position_norm, y = norm_count, color = stage)) +
+  geom_line(linewidth = 1.4, alpha = 0.7) +
+  geom_vline(aes(xintercept = 0), linetype = "solid", color = "black", linewidth = 0.6) +
+  scale_color_manual(values = c("#982D80FF", "grey40", "#F8765CFF", "#FEBA80FF")) +
+  #scale_x_continuous() +
+  facet_wrap(~subtype, nrow = 1, scales = "free_y") +
+  #ggtitle("VSG NTD Type") +
+  xlab("Position Relative to NTD Boundary") +
+  ylab("Normalized Count") +
+  theme_bw()
+
+plot_grid(pTbg, pTbr, nrow = 2)
+
+```
+
+***
+
+<br><br><br><br>
+
+***
+
+```{r, Session Info, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,840 @@
+---
+title: "Figure 4"
+author: "Jaime So"
+date: "2025-08-14"
+output:
+  html_document:
+    css: ~/rmarkdown_formatting/style.css
+    includes:
+      after_body: ~/rmarkdown_formatting/JSo_footer.html
+    number_sections: False
+    theme: flatly
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    fig_caption: True
+    df_print: kable
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(reshape2)
+library(tidyverse)
+library(vegan)
+#BiocManager::install("IRanges")
+library(IRanges)
+library(viridis)
+#install.packages('gganimate')
+library(gganimate)
+library(pheatmap)
+library(stringr)
+library(cowplot)
+library(ggbeeswarm)
+library(ggpubr)
+#BiocManager::install("Biostrings")
+library("Biostrings")
+library(ggplot2); theme_set(theme_bw()); theme_update(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+<br><br><br><br>
+
+# Figure 4: B-type VSGs are evenly represented across subspecies genomes. 
+***
+
+## A
+***
+
+The proportion of enriched peptides in gHAT patient serum that are from type B NTDs is much higher than expected.
+```{r, message=FALSE}
+# find the expected proportions of NTD types based on the represented library phages
+lib_peps <- read_csv("FigureData/fc_mat.csv", show_col_types = FALSE) %>% .$Peptide
+lib_expect <- read_csv("FigureData/VSG_Tile_Classification.csv", show_col_types = FALSE) %>% filter(pep_id %in% lib_peps) %>% filter(pep_region == "N-terminal") %>%
+  group_by(nterm_typesubtype) %>% summarise(n = n())
+lib_expect <- lib_expect %>% mutate(prop = n/(read_csv("FigureData/VSG_Tile_Classification.csv", show_col_types = FALSE) %>% filter(pep_id %in% lib_peps) %>% filter(pep_region == "N-terminal") %>% nrow()))
+
+# make a df containing significantly enriched peptides and their annotations
+Nterms <- read_csv("FigureData/sig_peps.csv") %>% select(Peptide, sample) %>% distinct() %>%
+  mutate(stage = case_when(grepl("Pg1", .$sample)~"Pg1",
+                           grepl("Pg2", .$sample)~"Pg2",
+                           grepl("Pr1", .$sample)~"Pr1",
+                           grepl("Pr2", .$sample)~"Pr2",
+                           grepl("Cg", .$sample)~"Cg",
+                           grepl("Cr", .$sample)~ "Cr",
+                           grepl("NC", .$sample)~"Cn"))
+Nterms <- inner_join(Nterms, read_csv("FigureData/VSG_Tile_Classification.csv", show_col_types = FALSE), by = c("Peptide"="pep_id"))
+plot_nterm <- Nterms %>% filter(pep_region == "N-terminal") %>% select(Peptide, sample, nterm_typesubtype) %>% group_by(sample, nterm_typesubtype) %>% 
+  summarise(n = n()) %>% group_by(sample) %>% mutate(total = sum(n))
+plot_nterm <- inner_join(plot_nterm, Nterms %>% select(sample, stage) %>% distinct()) %>% mutate(prop = n/total)
+plot_nterm$stage <- factor(plot_nterm$stage, levels = c("Cn", "Cg", "Pg1", "Pg2", "Cr", "Pr1", "Pr2"))
+
+B_means <- plot_nterm %>% filter(nterm_typesubtype == "B1") %>% group_by(stage) %>% summarise(prop = mean(prop))
+
+# plot proportions of enriched type B NTD peptides per sample
+plot_nterm %>% filter(nterm_typesubtype == "B1") %>%
+  ggplot(aes(x = stage, y = prop, fill = stage))+
+  geom_violin(scale = "width")+
+  geom_quasirandom()+
+  geom_hline(data = lib_expect %>% filter(nterm_typesubtype == "B1"), aes(yintercept = prop), color = "red3", linewidth = 0.6)+
+  geom_crossbar(data = B_means, aes(min = prop, ymax = prop), linewidth = 0.3)+
+  scale_fill_manual(values = c("grey40", "#982D80FF", "#F8765CFF", "#FEBA80FF", "#5F187FFF", "#395D9CFF", "#3497A9FF"))+
+  scale_y_continuous(limits = c(0, 1.2), "Proportion of Enriched Peptides")+
+  stat_compare_means(comparisons = list(c("Pg1", "Pg2"), c("Cg", "Pg1"), c("Cg", "Pg2"), c("Cr", "Pr1"), c("Cr", "Pr2"), c("Pr1", "Pr2")))+
+  theme(text = element_text(size = 20))+
+  ggtitle("Enriched Type B N-terminal Peptides")+
+  theme_bw() + theme(legend.position = "none")
+
+```
+
+***
+
+## B
+***
+
+```{r, message=FALSE}
+
+Assembled_VSG <- read_csv("FigureData/complete_assembly_data.csv", show_col_types = FALSE)
+# extended metadata for each strain used in the VSG assembly
+all_meta <- Assembled_VSG %>% select(strain_name, SRA_accession, year, country, species) %>% distinct()
+
+count_VSG <- Assembled_VSG %>% count(species, strain_name)
+
+stats_count <- count_VSG %>% group_by(species) %>%
+  summarise(avg = mean(n), sd = sd(n)) %>%
+  plyr::rename(c("avg"="n"))
+
+count_VSG %>%
+ggplot(aes(x = species, y = n))+
+  geom_quasirandom(size = 2) +
+  geom_crossbar(data = stats_count, aes(ymin = n, ymax = n), linewidth = 0.5) +
+  geom_errorbar(data = stats_count, aes(ymin = (n - sd), ymax = (n + sd)), width = 0.5) +
+  scale_y_continuous(limits = c(0,5000)) +
+  ylab("Number of VSG") +   
+  stat_compare_means(comparisons = list( c("tbb", "tbg1"), c("tbb", "tbg2"), c("tbb", "tbr"), c("tbg1", "tbg2"), c("tbg1", "tbr"), c("tbg2", "tbr"))) +
+  theme(text = element_text(size=20), legend.position = "none", axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  ggtitle("Assembled VSGs per Subspecies") +
+  theme_bw()
+
+```
+
+***
+
+## C
+***
+
+```{r, message=FALSE}
+# simplify by grouping all A1 (A1a, A1b, A1c) subtypes together
+class_comp <- Assembled_VSG %>% 
+  mutate(class = case_when((nterm_typesubtype == "1a" | nterm_typesubtype == "1b" | nterm_typesubtype == "1c" ~ "A1"),
+                           nterm_typesubtype == "B1" ~ "B",
+                           TRUE ~ nterm_typesubtype)) %>%
+  count(species, strain_name, class) %>%
+  group_by(strain_name) %>% mutate(total = sum(n)) %>%
+  mutate(prop = n/total)
+
+class_comp$class <- replace_na(class_comp$class, "Undefined")
+
+
+
+p <- class_comp %>% group_by(species, strain_name, class) %>% summarise(plotprop = sum(prop)) %>%
+  ggplot(aes(x = species , y = plotprop, color = species)) +
+  scale_color_manual(values = c("#C2DF23FF", "#440154FF", "#31688EFF", "#1E9B8AFF")) +
+  geom_quasirandom(size = 2) +
+  scale_y_continuous(limits = c(0,1)) +
+  labs(title = "Proportion of VSGs by NTD Type",
+       x = "",
+       y = "Proportion of Peptides per Strain") +
+  facet_wrap(~class) +
+  theme_bw()
+p + theme(legend.position = "none")
+# the genomic class composition is not different between the T.b. subspecies
+
+```
+
+***
+
+# Assembling VSG repertoires of field isolates {.tabset .tabset-fade .tabset-pills}
+***
+
+Altered the original VSG-seq pipeline to only perform the assembly and cd-hit collapse steps and none of the expression quantification.
+
+Due to the unique biology of trypanosomes, namely the polycistronic transcription and complete lack of introns, we can assemble ORFs no problem from genomic illumina short reads using Trinity even though it is designed for Transcriptome assemblies.
+
+
+## Sequences scraped from Data Dryad and ENA
+
+Many of the datasets we found were featured in whole genome phylogenetic studies. Richardson et.al. 2015 (doi:10.1111/eva.12338) explores whether disease relapse of Tbg after treatment of patients in DRC was due to reinfection or recrudescence. The BT before treatment and AT/REL strains were highly similar suggesting it was indeed recrudescence in all cases.
+
+Weir et.al 2015 (DOI: 10.7554/eLife.11473) performed a phylogenetic network analysis on a large number of Tb strains: 75 Tbg1, 4 Tbg2, 4 Tbr, and 2 Tbb. Their analysis showed a distinct lack of heterozygosity which is indicative of clonal expansion of the Tbg1 strains. The major Tbg endemic countries represented had distinct lineages circulating within.
+
+## Trinity ORF Assembly
+
+Assembly using Trinity and ORF done using the VSG-seq methodology, calling with a VSG length cutoff of 300AA.
+
+VSG-seq input command:
+```{r, eval=FALSE}
+% python VSG_identify.py -i VSGid_input.txt -header All_Assemblies -cpu 24 -mem 100 -vsgdb concatAnTattb427 -v 0 -sit 1 -t 0
+```
+
+halt the VSG-seq pipeline after initial trinity assembly and VSG ORF-calling using blast. Concatenate all assembled VSG sequences with Jaclyn's fasta of all characterized tbb VSGs, then perform cd-hit clustering.
+
+Clustering with cd-hit at a nucleotide sequence identity of 100% to only exclude true duplicates, later we can cluster by lower thresholds to try and establish families or otherwise determine repertoire similarity thresholds. 
+
+***
+
+# Mapping Library Tiles to Assembled VSG
+***
+
+Compare tiles to assembled VSG using a similar approach to what we did for the breadth analysis. We get much better resolution by tiling the peptides first so we can see regions of high similarity within the sequence rather than blast's more global summary across the full alignment.
+
+Use this data to answer questions:
+- which VSGs are fully represented? 
+- what is the proportion of VSGs that are missing from each subspecies of Trypanosoma?
+- when portions of the VSG are unrepresented by tiles, what region of the VSG is it? CTD vs NTD?
+- Are certain NTD types underrepresented by the library tiles?
+
+## Summarize coverage
+```{r, eval=FALSE}
+
+# consider unique sequences
+
+type_ref <- Assembled_VSG %>% select(VSG_name, original_seq_length, nterm_seq_length, HMM_profile, nterm_typesubtype) %>% distinct()
+# the dataframe type_ref contains the total length of all assembled VSGs
+
+# summarizing the spans may be faster if we subset the data first, by nterm subtype
+read_genomecov <- function(range){
+  x <- type_ref[range, ] # df of protein types and lengths
+  y <- blast_out %>% filter(VSG %in% unique(x$VSG_name)) # df of alignment coords
+  # use iranges package for visualization
+  plotR <- data.frame(start = double(),
+                      end = double(),
+                      width = double(),
+                      seq_ID = character())
+  for (i in 1:length(x$original_seqID)) {
+    irR <- IRanges(y[y$VSG == x$VSG_name[i], ] %>%
+                   select(VSG, start, end) %>%
+                   distinct() %>%
+                   .$start,
+                 end = y[y$VSG == x$VSG_name[i], ] %>%
+                   select(VSG, start, end) %>%
+                   distinct() %>%
+                   .$end)
+    # collapse overlapping regions to calculate seq_ID coverage
+    cov <- IRanges::reduce(irR) %>% as.data.frame()
+    cov <- cov %>% mutate(VSG_name = x$VSG_name[i])
+    plotR <- rbind(plotR, cov)
+    }
+  plotR <- merge(plotR, x)
+  return(plotR)
+}
+
+
+unique(type_ref$VSG_name) %>% length()
+nrow(type_ref)
+# sequentially summarize all aligned spans for the 77k assembled VSG and add them to a dataframe
+
+temp <- read_genomecov(1:5000)
+mapped_tiles <- rbind(temp, read_genomecov(5001:10000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(10001:15000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(15001:20000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(20001:25000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(25001:30000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(30001:35000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(35001:40000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(40001:45000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(45001:50000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(50001:55000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(55001:60000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(60001:65000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(65001:70000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(70001:75000))
+mapped_tiles <- rbind(mapped_tiles, read_genomecov(75001:nrow(type_ref)))
+
+# save results as a csv for loading later
+#write_csv(mapped_tiles, file = "TileLibCoverage_results.csv")
+
+```
+***
+
+# Supplemental Figure S1
+***
+
+## S1B 
+
+Quantify which parts of the VSG protein (i.e. domain) are missing from the library
+
+```{r}
+
+type_ref <- Assembled_VSG %>% select(VSG_name, original_seq_length, nterm_seq_length, HMM_profile, nterm_typesubtype) %>% distinct()
+mapped_tiles <- read_csv("FigureData/TileLibCoverage_results.csv", show_col_types = FALSE) 
+
+# we must also include entries for any VSGs that had 0 hits
+no_mapping <- data.frame(VSG_name = setdiff(type_ref$VSG_name, unique(mapped_tiles$VSG_name))) %>% 
+  inner_join(type_ref %>% select(VSG_name, original_seq_length)) %>%
+  mutate(align = 0, cov = 0) %>%
+  select(VSG_name, align, original_seq_length, cov)
+
+# calculate proportion of coverage per VSG
+VSG_cov <- mapped_tiles %>% 
+  group_by(VSG_name) %>% summarise(align = sum(width)) %>%
+  merge(mapped_tiles %>% select(VSG_name, original_seq_length) %>% distinct()) %>%
+  mutate(cov = align/original_seq_length) %>%
+  rbind(no_mapping) %>%
+  inner_join(Assembled_VSG) %>% 
+  select(VSG_name, cov, nterm_typesubtype, strain_name, species) 
+
+# where does the Nterm coord usually fall
+binVSG <- mapped_tiles %>% dplyr::select(VSG_name, nterm_seq_length, original_seq_length) %>% distinct() %>% mutate(Nterm = nterm_seq_length / original_seq_length)
+print(summary(binVSG$Nterm))
+# notice the quartiles in the summary, the vast majority of NTDs occupy ~80-90% of the VSG coding sequence
+
+# filter the df for VSG that follow this pattern, exclude VSGs with no types
+
+binVSG <- binVSG %>% filter(Nterm > 0.65 & Nterm < 0.95)
+
+# merge with the mapped tiles dataframe
+DomainCov <- inner_join(mapped_tiles, binVSG)
+
+spans <- data.frame(VSG = character(),
+                    CTDlen = double(),
+                    Nterm = double(),
+                    Cterm = double())
+
+# the NTDs have the start coordinate at 1 instead of 0 so ad +1 to the difference for calculating coverage
+for (i in 1:nrow(DomainCov)){
+  x <- DomainCov[i, ]
+  y <-data.frame( VSG = x$VSG_name,
+                  CTDlen = (x$original_seq_length - x$nterm_seq_length),
+                  Nterm = case_when(x$start >= x$nterm_seq_length ~ 0, # start after
+                                 (x$start <= x$nterm_seq_length & x$end >= x$nterm_seq_length) ~ (x$nterm_seq_length - x$start + 1), # start in end out
+                                 (x$start <= x$nterm_seq_length & x$end <= x$nterm_seq_length) ~ (x$end - x$start) #within
+                                 ),
+                  Cterm = case_when(x$end <= x$nterm_seq_length ~ 0, # end before
+                                 (x$start <= x$nterm_seq_length & x$end >= x$nterm_seq_length) ~ (x$end - x$nterm_seq_length), # start out end in
+                                 (x$start >= x$nterm_seq_length & x$end <= x$original_seq_length) ~ (x$end - x$start) #within
+                                 )
+                  )
+  spans <- rbind(spans,y)
+}
+
+spans <- spans %>% group_by(VSG, CTDlen) %>% summarise(Nterm = sum(Nterm), Cterm = sum(Cterm)) %>%
+  inner_join(mapped_tiles %>% select(VSG_name, nterm_seq_length, original_seq_length) %>% distinct(), by = c("VSG"="VSG_name"))
+
+# calculate NTD coverage
+N_cov <- spans %>% 
+  mutate(cov = Nterm/nterm_seq_length) %>%
+  inner_join(Assembled_VSG, by=c("VSG"="VSG_name")) %>%
+  select(VSG, cov, nterm_typesubtype, strain_name, species)
+colnames(N_cov)[1] <- c("VSG_name")
+
+C_cov <- spans %>% 
+  mutate(cov = Cterm/CTDlen) %>%
+  inner_join(Assembled_VSG, by=c("VSG"="VSG_name")) %>%
+  select(VSG, cov, nterm_typesubtype, strain_name, species)
+colnames(C_cov)[1] <- c("VSG_name")
+
+pctcov <- rbind(VSG_cov %>% mutate(type = "full ORF"),
+                N_cov %>% mutate(type = "NTD"),
+                C_cov %>% mutate(type = "CTD"))
+
+# how many VSG per strain are very well represented vs those that are less well represented
+# anything with < 80% coverage is poorly represented
+species_binned <- pctcov %>%
+  group_by(strain_name) %>%
+  mutate(bins = case_when(cov >= 0.8 & type == "full ORF" ~ "Full ORF",
+                          cov >= 0.8 & type == "NTD" ~ "N-Terminal Domain",
+                          cov >= 0.8 & type == "CTD" ~ "C-Terminal Domain",
+                          TRUE ~ "poor")) %>% 
+  group_by(species, strain_name, type, bins) %>%
+  summarise(n = n())
+
+# find the total number of VSG for each strain
+species_binned <- species_binned %>% group_by(strain_name, type) %>% mutate(total = sum(n), prop = n/total)
+
+species_binned$bins <- factor(species_binned$bins, levels = c("Full ORF", "C-Terminal Domain", "N-Terminal Domain", "poor"))
+
+# boxplots
+ggplot(species_binned %>% filter(!(bins == "poor")), aes(x = bins, y = prop, fill = species, color = species)) +
+  geom_boxplot() +
+  scale_color_manual(values = c("#c2df23ff", "#440154ff", "#31688eff", "#1e9b8aff")) +
+  scale_fill_manual(values = c("#c2df23ff", "#440154ff", "#31688eff", "#1e9b8aff")) +
+  scale_y_continuous(limits = c(0,1)) +
+  ylab("Proportion of Assembled VSG per Strain") +
+  xlab("VSG Sequence Coverage by Pan-VSG Library") +
+  theme_bw()
+
+```
+
+
+***
+
+# Assembly QC {.tabset .tabset-fade .tabset-pills}
+***
+
+How well do the assembled VSGs recapitulate known repertoires. Compare VSGs from the three Lister427 clones we assembled to the complete annotated VSGenome from https://tryps.rockefeller.edu/sequences.html
+
+vsgs_tb427_all_atleast150aas_cds.fasta was the file used as reference for Lister 427. it contains 4211 sequences. We may want to filter it for longer VSGs like we did for our assembled output.
+
+```{r, eval=FALSE}
+
+# make blastdb
+% makeblastdb -in <inputfile.fasta> -out <outputfile> -parse_seqids -dbtype nucl
+
+# do blastdn
+% blastn -db <blast_database> -query <inputfile.fasta> -out <outputfile.csv> -outfmt "10 qseqid sseqid qlen slen length nident"
+
+```
+
+## References
+
+```{r}
+
+# the reference contains VSG fragments down to 150aa
+# we filtered our VSG-seq output for sequences of at least 300aa
+# how many reference VSG are this size?
+
+# the reference is full of "designated duplicate" VSGs, don't count these
+fastafile <- readDNAStringSet("FigureData/vsgs_tb427_all_atleast150aas_cds.fasta.txt")
+Lister427ref <- data.frame(name = names(fastafile), seq =paste(fastafile)) %>% mutate(seq_length = nchar(seq)) %>% filter(!grepl("Duplicate", name))
+
+print(paste("Number of Unique Lister 427 VSGs:", nrow(Lister427ref)))
+# simplify the VSG ids so we can match them to the blast data
+Lister427ref$sseqid <- str_split_fixed(Lister427ref$name, " : ", n=5)[, 1]
+Lister427ref$sseqid <- str_split_fixed(Lister427ref$sseqid, " GB", n=2)[, 1]
+
+Lister300aa <- Lister427ref %>% filter(seq_length >= 900) %>% .$sseqid
+
+# blast of assembled VSG to Lister 427 CDS from George Cross' database
+assembly_check <- read_csv("FigureData/assembly_check.csv", show_col_types = FALSE, col_names = F)
+colnames(assembly_check) <- c("qseqid", "sseqid", "qlen", "slen", "length", "nident")
+
+```
+
+
+## Lister 427 assemblies
+
+- Lister427_2T1 Accession: ERR7929303 & ERR7929302
+- Lister427_2060 Accession: ERR7929309 & ERR7929308
+- Lister 427 BSF Accession: SRR24321266
+
+```{r}
+
+Lister427 <- Assembled_VSG %>% filter(strain_name == "Lister427_2T1" | strain_name == "Lister427BSF" | strain_name == "Lister427_2060") %>% select(VSG_name, original_seqID, strain_name, SRA_accession) %>%
+  inner_join(assembly_check, by = c("original_seqID"="qseqid"))
+# calculate % query aligned and % identity across the whole length of the VSG
+Lister427 <- Lister427 %>% mutate(percent_identity = (nident/qlen)*100, percent_query_aligned = (length/qlen)*100)
+
+# Filter for the best hits on each of the reference VSGs
+Lister427_best <- Lister427 %>% group_by(strain_name, VSG_name) %>% summarise(best_hit = max(percent_identity), best_align = max(percent_query_aligned))
+
+# how many VSGs aligned per strain?
+inner_join(Lister427_best %>% group_by(strain_name) %>% summarise(n_aligned=n()),
+           Assembled_VSG %>% filter(species == "tbb") %>% group_by(strain_name) %>% summarise(total = n()))
+           
+# nearly all of the assembled VSG have a hit in the Lister reference
+
+plot_grid(
+Lister427_best %>%
+  ggplot(aes(x = best_hit)) + 
+  geom_histogram(color = "navy", fill = "navy", alpha = 0.7) +
+  theme_bw() +
+  facet_wrap(~strain_name)+
+  xlab("% Identity"),
+Lister427_best %>%
+  ggplot(aes(x = best_align)) + 
+  geom_histogram(color = "navy", fill = "navy", alpha = 0.7) +
+  theme_bw() +
+  facet_wrap(~strain_name)+
+  xlab("% Query Aligned"),
+nrow = 2
+)
+
+```
+
+## Final S1C
+
+```{r}
+
+plot_medians <- Lister427_best %>% group_by(strain_name) %>% summarise(best_hit = median(best_hit))
+
+Lister427_best %>%
+  ggplot(aes(x = best_hit)) + 
+  geom_histogram(color = "navy", fill = "navy", alpha = 0.7) +
+  geom_vline(data = plot_medians, aes(xintercept = best_hit), color = "red3", linewidth = 0.8)+
+  theme_bw() +
+  facet_wrap(~strain_name)+
+  ylab("Count")+
+  xlab("% Identity")
+
+plot_medians
+
+```
+
+***
+# Supplemental Figure 2 
+
+## S2A
+
+```{r}
+
+# used cd-hit-est to cluster all of the assembled VSG sequences with a global identity of 80%
+cluster80 <- read_table("FigureData/cdhitest80_families.txt", col_names = F, show_col_types = FALSE) %>% mutate(clustername = paste(X2, X3, sep = "_")) %>% select(X1, clustername)
+colnames(cluster80)[1] <- "VSG_name"
+
+
+families <- inner_join(Assembled_VSG, cluster80, by = "VSG_name")
+
+families <- reshape2::dcast((families %>% group_by(clustername, strain_name) %>% summarise(count = n())), clustername ~ strain_name, value.var = "count") 
+families[is.na(families)] <- 0
+clusternames <- families$clustername
+families <- families %>% select(-clustername)
+row.names(families) <- clusternames
+
+fam_mat <- vegan::vegdist(t(families), binary = T, method = "jaccard") %>% as.matrix() %>% as.data.frame()
+
+## PCoA of the distance matrix
+fam =  cmdscale(fam_mat, eig=TRUE, x.ret=TRUE)
+fam.var.per <- round(fam$eig/sum(fam$eig)*100, 1)
+fam.values <- fam$points
+fam.data <- data.frame(sample=rownames(fam.values),
+  X=fam.values[,1],
+  Y=fam.values[,2])
+
+ggplot(data=fam.data %>%
+         left_join(all_meta, by = c("sample"="strain_name")),
+       aes(x=X, y=Y, text = sample,
+           #label=sample,
+           color = species))+
+  #geom_text(nudge_x = 0.01, nudge_y = 0.01) +
+  geom_point(size = 3)+
+  xlab(paste("MDS1 - ", fam.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", fam.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot of Jaccard distance") + 
+  scale_color_manual(values = c("#C2DF23FF", "#440154FF", "#31688EFF", "#1E9B8AFF")) +
+  theme_bw()
+
+```
+
+There is a large separation between the VSGs represented in the tbg1 genomes compared to strains from all other subspecies. tbg2, tbb, and tbr all cluster tightly together while the tbg1 strains cluster on the other side of the space in distinct groups that seem to be driven mainly by geography.
+
+***
+
+# Repertoire Comparisons {.tabset .tabset-fade .tabset-pills}
+***
+
+## Clustering 
+
+The percent identity limit for cd-hit-est nucleotide sequences is only 80%. Translate the assembled VSG to protein sequence and then try clustering all the way down to 40% global identity.
+
+Adjust word size accordingly:
+
+-n 5 for thresholds 0.7 ~ 1.0
+
+-n 4 for thresholds 0.6 ~ 0.7
+
+-n 3 for thresholds 0.5 ~ 0.6
+
+-n 2 for thresholds 0.4 ~ 0.5
+
+Example cd-hit command:
+
+% cd-hit -i All_Assembled_VSG_renamed-translated.faa -o Assembled_VSG_cdhitest80 -c 0.8 -n 5 -M 16000 -d 0
+
+Use python script to match clusters with sequence names to create tables and eventually matrices for plotting.
+
+```{r, eval=FALSE}
+
+import glob
+import os, sys
+import subprocess
+from sys import argv
+
+# Jaime: I edited this script from Jaclyn so that you can enter files named differently
+# - argv[1] is the VSG-seq output .clstr file
+# - argv[2] is the name of the output file
+currDir = os.getcwd()
+
+cluster_dict = {}
+with open(argv[1],'r') as infile_split:
+    with open(argv[2],'w+') as reference:
+        for line in infile_split:
+            if line.startswith('>'):
+                clean_line = line.split('>')
+                cluster_dict[clean_line[1]] = []
+                lastline = clean_line[1]
+            else:
+                newline = line.split()
+                if len(newline) >1:
+                    final = newline[2].split('>')
+                    final = final[1].split('...')
+                    cluster_dict[lastline].append(final[0])
+
+        for key, value in cluster_dict.items():
+            for item in value:
+                reference.write(str(item + '\t' + key))
+
+```
+
+## Plotting
+```{r, message=FALSE}
+
+# used cd-hit- to cluster assembled VSG sequences with a range of global % identities
+
+filelist <- c(list.files(path = "FigureData/cd-hit_VSGfam/", pattern = ".*._families.txt", full.names = T))
+df <- rbindlist(sapply(filelist, fread, simplify = FALSE), use.names = FALSE, idcol = "PID")
+# fix the column names, one of the data rows was made the column names
+addentry <- data.frame(PID = "FigureData/cd-hit_VSGfam/cdhit40_families.txt", VSG_name = "Assembled_VSG_26798", Cluster = "Cluster 0")
+colnames(df) <- c("PID", "VSG_name", "Cluster")
+df <- rbind(addentry, df)
+
+df <- df %>% mutate(PID = str_remove(PID, pattern = "_families.txt")) %>%
+  mutate(PID = str_remove(PID, pattern = "FigureData/cd-hit_VSGfam/cdhit"))
+
+# add strain and VSG annotation info
+df <- merge(Assembled_VSG, df)
+
+```
+
+## Jaccard Distance
+```{r, message=FALSE}
+
+jaccard.mds <- data.frame(sample = character(),
+                        X=double(),
+                        Y=double(),
+                        PID = character())
+
+for (i in 1:length(unique(df$PID))){
+  families <- reshape2::dcast(df %>% filter(PID == unique(df$PID)[i]) %>% group_by(Cluster, strain_name) %>% summarise(count = n()), Cluster ~ strain_name, value.var = "count")
+  families[is.na(families)] <- 0
+  clusternames <- families$Cluster
+  families <- families %>% dplyr::select(-Cluster)
+  row.names(families) <- clusternames
+  
+  mds_mat <- vegan::vegdist(t(families), binary=T, method = "jaccard") %>% as.matrix() %>% as.data.frame()
+
+# PCoA of distance matrix
+  mds <- cmdscale(mds_mat, eig = TRUE, x.ret = TRUE)
+  mds.var.per <- round(mds$eig/sum(mds$eig)*100, 1)
+  mds.values <- mds$points
+  mds.data <- data.frame(sample = rownames(mds.values),
+                              X=mds.values[,1],
+                              Y=mds.values[,2]) %>% 
+    mutate(PID = unique(df$PID)[i])
+  jaccard.mds <- rbind(jaccard.mds, mds.data)
+}
+
+jaccard.mds <- jaccard.mds %>%
+         left_join(all_meta, by = c("sample"="strain_name"))
+
+ggplot(data=jaccard.mds,
+       aes(x=X, y=Y, text=sample,
+           #label=sample,
+           color=species))+
+  #geom_text(nudge_x=0.01, nudge_y=0.01)+
+  geom_point(size=3)+
+  facet_wrap(~PID)+
+  ggtitle("Jaccard MDS")+
+  scale_color_manual(values = c("#c2df23ff", "#440154ff", "#31688eff", "#1e9b8aff"))+
+  theme_bw()
+
+```
+
+# Supplemental Figure S2B
+
+```{r, message=FALSE}
+
+tbg.jaccard.mds <- data.frame(sample = character(),
+                        X=double(),
+                        Y=double(),
+                        PID = character())
+
+for (i in 1:length(unique(df$PID))){
+  families <- reshape2::dcast(df %>% filter(PID == unique(df$PID)[i] & species == "tbg1") %>% group_by(Cluster, strain_name) %>% summarise(count = n()), Cluster ~ strain_name, value.var = "count")
+  families[is.na(families)] <- 0
+  clusternames <- families$Cluster
+  families <- families %>% select(-Cluster)
+  row.names(families) <- clusternames
+  
+  mds_mat <- vegan::vegdist(t(families), binary=T, method = "jaccard") %>% as.matrix() %>% as.data.frame()
+
+# PCoA of distance matrix
+  mds <- cmdscale(mds_mat, eig = TRUE, x.ret = TRUE)
+  mds.var.per <- round(mds$eig/sum(mds$eig)*100, 1)
+  mds.values <- mds$points
+  mds.data <- data.frame(sample = rownames(mds.values),
+                              X=mds.values[,1],
+                              Y=mds.values[,2]) %>% 
+    mutate(PID = unique(df$PID)[i])
+  tbg.jaccard.mds <- rbind(tbg.jaccard.mds, mds.data)
+}
+
+tbg.jaccard.mds <- tbg.jaccard.mds %>%
+         left_join(all_meta, by = c("sample"="strain_name"))
+tbg.jaccard.mds$PID <- as.numeric(tbg.jaccard.mds$PID)
+
+g1 <- ggplot(data=tbg.jaccard.mds,
+       aes(x=X, y=Y, text=sample,
+           #label=sample,
+           color=country))+
+  #geom_text(nudge_x=0.01, nudge_y=0.01)+
+  geom_point(size=4, alpha = 0.6)+
+  facet_wrap(~PID)+
+  ggtitle("Jaccard MDS: Tbg1 Only")+
+  scale_color_manual(values = c("#e54456", "#f29f05", "#f8cc1b", "#36c570", "#571bc6"))+
+  theme_bw()
+g1
+
+# show 2 facets: a low one and the highest showing how populations diversify based on geography or year
+
+plot_grid(tbg.jaccard.mds %>% filter(PID == 45) %>%
+ggplot(aes(x=X, y=Y, text=sample,
+           #label=sample,
+           color=country))+
+  #geom_text(nudge_x=0.01, nudge_y=0.01)+
+  geom_point(size=4, alpha = 0.6)+
+  facet_wrap(~PID)+
+  ggtitle("Jaccard MDS: Tbg1 Only")+
+  scale_color_manual(values = c("#e54456", "#f29f05", "#f8cc1b", "#36c570", "#571bc6"))+
+  theme_bw(),
+tbg.jaccard.mds %>% filter(PID == 98) %>%
+ggplot(aes(x=X, y=Y, text=sample,
+           #label=sample,
+           color=country))+
+  #geom_text(nudge_x=0.01, nudge_y=0.01)+
+  geom_point(size=4, alpha = 0.6)+
+  facet_wrap(~PID)+
+  ggtitle("Jaccard MDS: Tbg1 Only")+
+  scale_color_manual(values = c("#e54456", "#f29f05", "#f8cc1b", "#36c570", "#571bc6"))+
+  theme_bw()
+)
+
+
+g2 <- ggplot(data=tbg.jaccard.mds,
+       aes(x=X, y=Y, text=sample,
+           #label=sample,
+           color=year))+
+  #geom_text(nudge_x=0.01, nudge_y=0.01)+
+  geom_point(size=4, alpha = 0.6)+
+  facet_wrap(~PID)+
+  ggtitle("Jaccard MDS: Tbg1 Only")+
+  scale_color_viridis(discrete = T)+
+  theme_bw()
+g2
+
+plot_grid(tbg.jaccard.mds %>% filter(PID == 45) %>%
+ggplot(aes(x=X, y=Y, text=sample,
+           #label=sample,
+           color=year))+
+  #geom_text(nudge_x=0.01, nudge_y=0.01)+
+  geom_point(size=4, alpha = 0.6)+
+  facet_wrap(~PID)+
+  ggtitle("Jaccard MDS: Tbg1 Only")+
+  scale_color_viridis(discrete = T)+
+  theme_bw(),
+tbg.jaccard.mds %>% filter(PID == 98) %>%
+ggplot(aes(x=X, y=Y, text=sample,
+           #label=sample,
+           color=year))+
+  #geom_text(nudge_x=0.01, nudge_y=0.01)+
+  geom_point(size=4, alpha = 0.6)+
+  facet_wrap(~PID)+
+  ggtitle("Jaccard MDS: Tbg1 Only")+
+  scale_color_viridis(discrete = T)+
+  theme_bw()
+)
+
+```
+***
+
+# Supplemental Figure S6B and S7B
+***
+Check that candidate diagnostic peptides are represented in relevant assembled genomes
+
+```{r, message=FALSE}
+
+Tbr_diagnostics <- c("AF107887.1|270-360", "CAA85518.2|180-270", "Tb427VSG-1214|315-405", "Tb427VSG-1343|225-315", "Tb427VSG-1596|225-315", "Tb427VSG-2069|291-381", "Tb427VSG-340|439-529", "Tbb1125VSG-2036|405-495", "Tbb1125VSG-4218|406-496", "Tbb1125VSG-4304|90-180", "Tbb927VSG-1041|90-180", "Tbb927VSG-1611|45-135", "Tbb927VSG-1617|225-315", "Tbb1125VSG-5083|296-386", "Tbb1125VSG-1302|360-450", "Tbb1125VSG-1415|225-315")
+
+Tbg_diagnostics <- c("Tb427VSG-2211|0-90", "Tbb1125VSG-6504|0-90", "Tbb1125VSG-2583|180-270", "Tb427VSG-1426|270-360", "Tbb1125VSG-246|45-135", "Tbb927VSG-147|45-135", "Tb427VSG-6146|0-90", "Tb427VSG-6609|90-180", "Tb427VSG-1015|90-180", "Tbb1125VSG-6008|45-135", "Tb427VSG-1008|45-135", "Tb427VSG-807|225-315", "KC434512.1|45-135", "Tb427VSG-3693|0-90", "Tbb1125VSG-1677|45-135", "Tbb927VSG-508|270-360", "Tbb1125VSG-292|270-360", "Tbb1125VSG-4200|45-135", "Tbb1125VSG-5577|45-135", "Tbb927VSG-507|45-135", "Tbb1125VSG-489|45-135", "Tb427VSG-2147|45-135", "Tbb1125VSG-4238|225-315", "Tbb1125VSG-6008|0-90", "KC434929.1|45-135", "Tb427VSG-626|45-135", "Tbb1125VSG-3176|0-90", "Tb427VSG-1604|260-350", "Tbb1125VSG-153|270-360", "Tbb1125VSG-1071|225-315")
+
+candidate_align <- read_csv("FigureData/candidateList_matched.csv")
+candidate_align <- candidate_align %>% mutate(length = qend - qstart)
+
+diagnostic_rep <- inner_join(candidate_align %>% select(qseqid, sseqid, length) %>% group_by(qseqid, sseqid) %>% summarise(total = sum(length)), 
+                             Assembled_VSG, by = c("sseqid"="VSG_name"), relationship = "many-to-many")
+# find the largest alignment to each tile for every strain
+diagnostic_rep <- diagnostic_rep %>% group_by(qseqid, strain_name) %>% mutate(best = max(total)) %>% select(qseqid, strain_name, species, best) %>% distinct() %>% mutate(pct_cov = best/90 *100)
+
+# add in the representation of SRA and ISG65
+# assess whether these genes were identified in the assembled orf references
+findSRA_ISG <- rbind(read_csv("FigureData/findSRA-ISG65/ERR270817_simple_trimmed_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "GYBO"),
+                     read_csv("FigureData/findSRA-ISG65/ERR270820_simple_trimmed_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "K975_1"),
+                     read_csv("FigureData/findSRA-ISG65/ERR270821_simple_trimmed_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "Z210"),
+                     read_csv("FigureData/findSRA-ISG65/ERR270825_simple_trimmed_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "N1052"),
+                     read_csv("FigureData/findSRA-ISG65/ERR273559_simple_trimmed_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "K975_2"),
+                     read_csv("FigureData/findSRA-ISG65/Tbr_LW024_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "Tbr_LW024"),
+                     read_csv("FigureData/findSRA-ISG65/Tbr_LW031_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "Tbr_LW031"),
+                     read_csv("FigureData/findSRA-ISG65/Tbr_LW032_orf_findSRA_BlastScore.csv", show_col_types = FALSE)  %>% mutate(strain_name = "Tbr_LW032"),
+                     read_csv("FigureData/findSRA-ISG65/Tbr_LW041_orf_findSRA_BlastScore.csv", show_col_types = FALSE) %>% mutate(strain_name = "Tbr_LW041"))
+
+findSRA_ISG %>% group_by(hit_name, strain_name) %>% summarise(best = max(percent_identity))
+
+Add_SRA_ISG <- findSRA_ISG %>% group_by(hit_name, strain_name) %>% summarise(best = max(percent_identity)) %>% mutate(qseqid = case_when(grepl("AF107887.1", hit_name)~"AF107887.1|270-360", grepl("Z37159.2", hit_name)~"CAA85518.2|180-270"), pct_cov = 100, species = "tbr") %>% select(qseqid, strain_name, species, best, pct_cov)
+diagnostic_rep %>% filter(species == "tbr", qseqid == "CAA85518.2|180-270")
+
+# We are going to assume that if there is a blast hit then the gene is present
+# ISG65 and SRA are functional proteins that shouldn't be diversifying the same way VSG do
+
+Add_SRA_ISG <- rbind(Add_SRA_ISG, data.frame(qseqid = rep("CAA85518.2|180-270", 2), 
+                                             strain_name = c("Tbr_LW041", "Tbr_LW024"),
+                                             species = rep("tbr", 2),
+                                             best = rep(24, 2),
+                                             pct_cov = rep(100, 2)))
+
+hm_tbr <- diagnostic_rep %>% filter(species == "tbr", qseqid %in% Tbr_diagnostics, !(qseqid == "CAA85518.2|180-270")) %>% rbind(Add_SRA_ISG) %>% group_by(qseqid) %>% mutate(temp = sum(pct_cov)) %>% arrange(-temp) %>% ungroup() %>% dplyr::select(qseqid, strain_name, pct_cov) %>% pivot_wider(names_from = "strain_name", values_from = "pct_cov") %>% column_to_rownames(var = "qseqid") %>% as.matrix(.)
+hm_tbr[is.na(hm_tbr)] <- 0
+
+
+pheatmap(hm_tbr,
+         show_colnames= T,
+         show_rownames = T,
+         cluster_cols = F,
+         cluster_rows = F,
+         #treeheight_row = 0,
+         #breaks = c(0, 20, 40, 60, 80, 100),
+         col = magma(100),
+         main = "Tbr: Diagnostic Peptide Representation in Field Isolates"
+         )
+
+hm_tbg <- 
+diagnostic_rep %>% filter(species == "tbg1", qseqid %in% Tbg_diagnostics) %>% group_by(qseqid) %>% mutate(temp = sum(pct_cov)) %>% arrange(-temp) %>% ungroup() %>% dplyr::select(qseqid, strain_name, pct_cov) %>% pivot_wider(names_from = "strain_name", values_from = "pct_cov") %>% column_to_rownames(var = "qseqid") %>% as.matrix(.)
+# add the missing tile with no hits to the matrix
+setdiff(Tbg_diagnostics, rownames(hm_tbg))
+Add_Missing <- matrix(nrow = 1, ncol = 100)
+rownames(Add_Missing) <- setdiff(Tbg_diagnostics, rownames(hm_tbg))
+colnames(Add_Missing) <- colnames(hm_tbg)
+hm_tbg <- rbind(hm_tbg, Add_Missing)
+hm_tbg[is.na(hm_tbg)] <- 0
+
+
+pheatmap(hm_tbg,
+         show_colnames= T,
+         show_rownames = T,
+         cluster_cols = F,
+         cluster_rows = F,
+         #treeheight_row = 0,
+         #breaks = c(0, 20, 40, 60, 80, 100),
+         col = magma(100),
+         main = "Tbg: Tile Representation in Field Isolates"
+         )
+
+```
+***
+
+<br><br><br><br>
+
+```{r, Session Info, echo=FALSE}
+sessionInfo()
+```
