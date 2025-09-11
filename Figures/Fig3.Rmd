@@ -108,7 +108,7 @@ stacked <- rbind(unenriched %>% mutate(lib = "Phage"),
                  tbr_enriched %>% mutate(lib = "Tbr")) %>% 
   group_by(lib) %>%
   mutate(Percent = round((n/sum(n))*100, 1))
-stacked$lib <- factor(stacked$lib, levels = c("Phage", "Non-Endemic", "Tbg", "Tbg Neg", "Tbr", "Tbr Neg"))
+stacked$lib <- factor(stacked$lib, levels = c("Phage", "Non-Endemic", "Tbg Neg","Tbg", "Tbr Neg", "Tbr"))
 
 ggplot(stacked, aes(x=lib, y=Percent, fill=stack_class))+
   geom_bar(stat="identity")+
@@ -138,11 +138,11 @@ percentage_contributions <- 100 * contributions / total_chi_square
 # percent contribution
 print(round(percentage_contributions, 2))
 
-pheatmap_color <- colorRampPalette(brewer.pal(n=11, name = "RdBu"))(50)
-pheatmap(round(chisq_res$residuals, 2), 
+pheatmap_color <- colorRampPalette(brewer.pal(n=11, name = "RdGy"))(50)
+pheatmap(round(chisq_res$residuals, 2)[, c(1, 2, 4, 3, 5)], 
          cluster_rows = F,
          cluster_cols = F,
-         col = pheatmap_color
+         col = rev(pheatmap_color)
          )
 
 ```
