@@ -662,7 +662,7 @@ tbg_test_stats
 
 # LDA and GLM both used the lasso selected peptides as predictors so they do not add too much, pick one of each as representatives
 
-tbg_best <- list(tbg_model_glm[[2]], tbg_model_lda[[5]], tbg_model_boost[[1]], tbg_model_boost[[3]], tbg_model_boost[[5]], tbg_model_mars[[1]], tbg_model_mars[[2]], tbg_model_mars[[3]], tbg_model_mars[[7]], tbg_model_mars[[8]], tbg_model_mars[[9]])
+tbg_best <- list(tbg_model_glm[[2]], tbg_model_lda[[6]], tbg_model_boost[[1]], tbg_model_boost[[3]], tbg_model_boost[[5]], tbg_model_mars[[1]], tbg_model_mars[[2]], tbg_model_mars[[3]], tbg_model_mars[[7]], tbg_model_mars[[8]], tbg_model_mars[[9]])
 
 final_tbg <- rbind(varImp(tbg_best[[1]])$importance %>% mutate(names=row.names(.), model = "glm_2"),
                    varImp(tbg_best[[2]])$importance %>% mutate(names=row.names(.), model = "lda_5") %>% dplyr::select(Pos, names, model) %>% dplyr::rename("Overall"="Pos"),
@@ -913,10 +913,12 @@ tbr_diagnostic_t2 <- data.frame(value = rowSums(tbr_mat_t2),
                                 sample = names(rowSums(tbr_mat_t2))) %>%
   inner_join(HATmeta, by = c("sample"))
 
+tbr_diagnostic_t2$stage <- factor(tbr_diagnostic_t2$stage, levels = c("Cn", "Cg", "Pg1", "Pg2", "Cr", "Pr1", "Pr2"))
+
 tbr_diagnostic_t2 %>% 
   ggplot(aes(x = stage, y = value, fill = stage))+
   geom_boxplot()+
-  scale_fill_manual(values = c("grey40","#982D80FF","#5F187FFF","#f8765cff","#FEBA80FF","#395d9cff","#3497A9FF"))+
+  scale_fill_manual(values = c("grey40","#982D80FF","#f8765cff","#FEBA80FF","#5F187FFF","#395d9cff","#3497A9FF"))+
   ggtitle("Total Detected Tbr Diagnostic Peptides per Patient")+
   ylab("# Peptides")+
   scale_y_continuous(limits = c(0, 10))+
@@ -939,10 +941,12 @@ tbg_diagnostic_t2 <- data.frame(value = rowSums(tbg_mat_t2),
                                 sample = names(rowSums(tbg_mat_t2))) %>%
   inner_join(HATmeta, by = c("sample"))
 
+tbg_diagnostic_t2$stage <- factor(tbg_diagnostic_t2$stage, levels = c("Cn", "Cg", "Pg1", "Pg2", "Cr", "Pr1", "Pr2"))
+
 tbg_diagnostic_t2 %>% 
   ggplot(aes(x = stage, y = value, fill = stage))+
   geom_boxplot()+
-  scale_fill_manual(values = c("grey40","#982D80FF","#5F187FFF","#f8765cff","#FEBA80FF","#395d9cff","#3497A9FF"))+
+  scale_fill_manual(values = c("grey40","#982D80FF","#f8765cff","#FEBA80FF","#5F187FFF","#395d9cff","#3497A9FF"))+
   ggtitle("Total Detected Tbg Diagnostic Peptides per Patient")+
   ylab("# Peptides")+
   scale_y_continuous(limits = c(0, 30))+
