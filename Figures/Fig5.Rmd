@@ -1002,6 +1002,249 @@ pheatmap(hm_tbg,
          )
 
 ```
+
+## Permutation Testing for Top Tbg Models
+
+Compare the original ROC value to the distribution of random permuted values. The p-value is the proportion of times the randomized models performed as well or better than our trained model using real data.
+
+```{r}
+# write function to perform permutation tests for various models
+
+# for tbg models that used lasso-selected variables
+permtbg_selected <- function(method_in, seed){
+  set.seed(seed)
+  n_permutations <- 5000
+  perm_metrics <- numeric(n_permutations)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  for(i in 1:n_permutations) {
+    # Shuffle the outcome variable
+    shuffled_y <- sample(trainer$status)
+    trainer$status <-  shuffled_y
+    # Train model on shuffled data (use the same parameters as your original model)
+    perm_model <- train(status ~`Tb427VSG-2211|0-90`+`Tbb1125VSG-6504|0-90`+`Tbb1125VSG-2583|180-270`+`Tb427VSG-1426|270-360`+`Tbb1125VSG-246|45-135`+`Tbb927VSG-147|45-135`+`Tb427VSG-6146|0-90`+`Tb427VSG-6609|90-180`+`Tb427VSG-1015|90-180`+`Tbb1125VSG-6008|45-135`+`Tbb1125VSG-1677|45-135`+`Tb427VSG-1008|45-135`+`Tb427VSG-807|225-315`+`KC434512.1|45-135`+`Tb427VSG-3693|0-90`, 
+                        data = trainer,
+                        method = method_in,
+                        # we used ROC (AUC) for model selection rather than accuracy or RMSE because our model is meant to predict a binary outcome
+                        metric = 'ROC',
+                        trControl = fitControl)
+  
+    perm_metrics[i] <- perm_model$results$ROC
+    }
+  return(perm_metrics)
+}
+
+# Tbg models that have built-in feature selection
+permtbg <- function(method_in, my_model, seed){
+  set.seed(seed)
+  n_permutations <- 5000
+  perm_metrics <- numeric(n_permutations)
+  ind <- createDataPartition(Tbg_df$status, p = 0.8, list = F)
+  trainer <- Tbg_df[ind, c(rf_opt, "status")]
+  for(i in 1:n_permutations) {
+    # Shuffle the outcome variable
+    shuffled_y <- sample(trainer$status)
+    trainer$status <-  shuffled_y
+    # Train model on shuffled data (use the same parameters as your original model)
+    perm_model <- train(status ~., 
+                        data = trainer,
+                        method = method_in,
+                        # we used ROC (AUC) for model selection rather than accuracy or RMSE because our model is meant to predict a binary outcome
+                        metric = 'ROC',
+                        tuneGrid = my_model$bestTune, # Use your best params
+                        trControl = fitControl)
+  
+    perm_metrics[i] <- perm_model$results$ROC
+    }
+  return(perm_metrics)
+}
+
+tbg1_metrics <- permtbg_selected('glm', 2)
+tbg2_metrics <- permtbg_selected('lda', 5)
+tbg3_metrics <- permtbg('glmboost', tbg_best[[3]], 1)
+tbg4_metrics <- permtbg('glmboost', tbg_best[[4]], 3)
+tbg5_metrics <- permtbg('glmboost', tbg_best[[5]], 5)
+tbg6_metrics <- permtbg('earth', tbg_best[[6]], 1)
+tbg7_metrics <- permtbg('earth', tbg_best[[7]], 2)
+tbg8_metrics <- permtbg('earth', tbg_best[[8]], 3)
+tbg9_metrics <- permtbg('earth', tbg_best[[9]], 7)
+tbg10_metrics <- permtbg('earth', tbg_best[[10]], 8)
+tbg11_metrics <- permtbg('earth', tbg_best[[11]], 9)
+
+# calculate p-values from permutation and observed ROC metrics
+# we performed 5000 permutations with scrambled target columns
+# the real model is counted as one of the permutations so add 1 to the numerator and denominator
+
+summary(tbg1_metrics)
+sum(tbg1_metrics >= tbg_best[[1]]$results$ROC) + 1 / (5000 + 1)
+
+summary(tbg2_metrics)
+sum(tbg2_metrics >= tbg_best[[2]]$results$ROC) + 1 / (5000 + 1)
+
+summary(tbg3_metrics)
+sum(tbg3_metrics >= max(tbg_best[[3]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbg4_metrics)
+sum(tbg4_metrics >= max(tbg_best[[4]]$results$ROC)) + 1 /(5000 + 1)
+
+summary(tbg5_metrics)
+sum(tbg5_metrics >= max(tbg_best[[5]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbg6_metrics)
+sum(tbg6_metrics >= max(tbg_best[[6]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbg7_metrics)
+sum(tbg7_metrics >= max(tbg_best[[7]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbg8_metrics)
+sum(tbg8_metrics >= max(tbg_best[[8]]$results$ROC)) + 1 /(5000 + 1)
+
+summary(tbg9_metrics)
+sum(tbg9_metrics >= max(tbg_best[[9]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbg10_metrics)
+sum(tbg10_metrics >= max(tbg_best[[10]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbg11_metrics)
+sum(tbg11_metrics >= max(tbg_best[[11]]$results$ROC)) +1 / (5000 + 1)
+
+plot_grid(
+  data.frame(ROC = tbg1_metrics, method = rep("GLM", 5000)) %>% 
+  ggplot(aes(x = ROC)) + 
+  geom_histogram(fill = "#1177BB", color = "black") + 
+  geom_vline(xintercept = tbg_best[[1]]$results$ROC, lty = 2, color = "red") +
+  theme_bw() + 
+  scale_x_continuous(limits = c(0,1)) +
+  ggtitle("GLM"),
+  data.frame(ROC = tbg3_metrics, method = rep("Boost", 5000)) %>% 
+  ggplot(aes(x = ROC)) + 
+  geom_histogram(fill = "#1177BB", color = "black") + 
+  geom_vline(xintercept = max(tbg_best[[3]]$results$ROC), lty = 2, color = "red") +
+  theme_bw() + 
+  scale_x_continuous(limits = c(0,1)) +
+  ggtitle("Boost"),
+  data.frame(ROC = tbg6_metrics, method = rep("MARS", 5000)) %>% 
+  ggplot(aes(x = ROC)) + 
+  geom_histogram(fill = "#1177BB", color = "black") + 
+  geom_vline(xintercept = max(tbg_best[[6]]$results$ROC), lty = 2, color = "red") +
+  theme_bw() + 
+  scale_x_continuous(limits = c(0,1)) +
+  ggtitle("MARS"),
+  nrow = 1
+)
+
+```
+
+## Permutation Testing for Top Tbr Models
+```{r}
+# for tbr models that use lasso selected variables
+permtbr_selected <- function(method_in, seed){
+  set.seed(seed)
+  n_permutations <- 5000
+  perm_metrics <- numeric(n_permutations)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  for(i in 1:n_permutations) {
+    # Shuffle the outcome variable
+    shuffled_y <- sample(trainer$status)
+    trainer$status <-  shuffled_y
+    # Train model on shuffled data (use the same parameters as your original model)
+    perm_model <- train(status ~ `AF107887.1|270-360`+`CAA85518.2|180-270`+`Tb427VSG-1214|315-405`+`Tb427VSG-1343|225-315`+`Tb427VSG-1596|225-315`+`Tb427VSG-2069|291-381`+`Tb427VSG-340|439-529`+`Tbb1125VSG-2036|405-495`+`Tbb1125VSG-4218|406-496`+`Tbb1125VSG-4304|45-135`+`Tbb1125VSG-4304|90-180`+`Tbb927VSG-1041|90-180`+`Tbb927VSG-1611|45-135`+`Tbb927VSG-1617|225-315`, 
+                        data = trainer,
+                        method = method_in,
+                        # we used ROC (AUC) for model selection rather than accuracy or RMSE because our model is meant to predict a binary outcome
+                        metric = 'ROC',
+                        trControl = fitControl)
+  
+    perm_metrics[i] <- perm_model$results$ROC
+    }
+  return(perm_metrics)
+}
+permtbr <- function(method_in, my_model, seed){
+  set.seed(seed)
+  n_permutations <- 5000
+  perm_metrics <- numeric(n_permutations)
+  ind <- createDataPartition(Tbr_df$status, p = 0.8, list = F)
+  trainer <- Tbr_df[ind, c(Tbr_sig, "status")]
+  for(i in 1:n_permutations) {
+    # Shuffle the outcome variable
+    shuffled_y <- sample(trainer$status)
+    trainer$status <-  shuffled_y
+    # Train model on shuffled data (use the same parameters as your original model)
+    perm_model <- train(status ~ ., 
+                        data = trainer,
+                        method = method_in,
+                        # we used ROC (AUC) for model selection rather than accuracy or RMSE because our model is meant to predict a binary outcome
+                        metric = 'ROC',
+                        tuneGrid = my_model$bestTune,
+                        trControl = fitControl)
+  
+    perm_metrics[i] <- perm_model$results$ROC
+    }
+  return(perm_metrics)
+}
+
+tbr1_metrics <- permtbr_selected('glm', 3)
+tbr2_metrics <- permtbr_selected('glm', 5)
+tbr3_metrics <- permtbr('glmboost', tbr_best[[3]], 2)
+tbr4_metrics <- permtbr('glmboost', tbr_best[[4]], 3)
+tbr5_metrics <- permtbr('glmboost', tbr_best[[5]], 5)
+tbr6_metrics <- permtbr('earth', tbr_best[[6]], 2)
+tbr7_metrics <- permtbr('earth', tbr_best[[7]], 3)
+tbr8_metrics <- permtbr('earth', tbr_best[[8]], 5)
+
+summary(tbr1_metrics)
+tbr_best[[1]]$results$ROC
+sum(tbr1_metrics >= tbr_best[[1]]$results$ROC) + 1 / (5000 + 1)
+
+summary(tbr2_metrics)
+sum(tbr2_metrics >= tbr_best[[2]]$results$ROC) + 1 / (5000 + 1)
+
+summary(tbr3_metrics)
+sum(tbr3_metrics >= max(tbr_best[[3]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbr4_metrics)
+sum(tbr4_metrics >= max(tbr_best[[4]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbr5_metrics)
+sum(tbr5_metrics >= max(tbr_best[[5]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbr6_metrics)
+sum(tbr6_metrics >= max(tbr_best[[6]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbr7_metrics)
+sum(tbr7_metrics >= max(tbr_best[[7]]$results$ROC)) + 1 / (5000 + 1)
+
+summary(tbr8_metrics)
+sum(tbr8_metrics >= max(tbr_best[[8]]$results$ROC)) + 1 / (5000 + 1)
+
+plot_grid(
+  data.frame(ROC = tbr1_metrics, method = rep("GLM", 5000)) %>% 
+  ggplot(aes(x = ROC)) + 
+  geom_histogram(fill = "#1177BB", color = "black") + 
+  geom_vline(xintercept = tbr_best[[1]]$results$ROC, lty = 2, color = "red") +
+  theme_bw() + 
+  scale_x_continuous(limits = c(0,1)) +
+  ggtitle("GLM"),
+  data.frame(ROC = tbr3_metrics, method = rep("Boost", 5000)) %>% 
+  ggplot(aes(x = ROC)) + 
+  geom_histogram(fill = "#1177BB", color = "black") + 
+  geom_vline(xintercept = max(tbr_best[[3]]$results$ROC), lty = 2, color = "red") +
+  theme_bw() + 
+  scale_x_continuous(limits = c(0,1)) +
+  ggtitle("Boost"),
+  data.frame(ROC = tbr6_metrics, method = rep("MARS", 5000)) %>% 
+  ggplot(aes(x = ROC)) + 
+  geom_histogram(fill = "#1177BB", color = "black") + 
+  geom_vline(xintercept = max(tbr_best[[6]]$results$ROC), lty = 2, color = "red") +
+  theme_bw() + 
+  scale_x_continuous(limits = c(0,1)) +
+  ggtitle("MARS"),
+  nrow = 1
+)
+
+```
+
 ***
 
 <br><br><br><br>
