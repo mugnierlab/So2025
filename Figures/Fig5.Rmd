@@ -902,34 +902,6 @@ pheatmap(tbr_mat[rownames(key_rows), ],
 
 re-code each heatmap matrix as binary positive or negative using different thresholds and count the number of positive peptides in controls vs patients. Define the threshold of detection as a log2(FC) > 2, this should be a reasonably strong signal.
 ```{r}
-# Tbr
-tbr_mat_t2 <- tbr_mat
-tbr_mat_t2[tbr_mat_t2 < 2] <- 0
-tbr_mat_t2[tbr_mat_t2 >= 2] <- 1
-
-tbr_diagnostic_t2 <- data.frame(value = rowSums(tbr_mat_t2),
-                                sample = names(rowSums(tbr_mat_t2))) %>%
-  inner_join(HATmeta, by = c("sample"))
-
-tbr_diagnostic_t2$stage <- factor(tbr_diagnostic_t2$stage, levels = c("Cn", "Cg", "Pg1", "Pg2", "Cr", "Pr1", "Pr2"))
-
-tbr_diagnostic_t2 %>% 
-  ggplot(aes(x = stage, y = value, fill = stage))+
-  geom_boxplot()+
-  scale_fill_manual(values = c("grey40","#982D80FF","#f8765cff","#FEBA80FF","#5F187FFF","#395d9cff","#3497A9FF"))+
-  ggtitle("Total Detected Tbr Diagnostic Peptides per Patient")+
-  ylab("# Peptides")+
-  scale_y_continuous(limits = c(0, 10))+
-  theme_bw()+
-  theme(legend.position = "none")
-
-```
-
-***
-# F
-***
-
-```{r}
 # Tbg
 tbg_mat_t2 <- tbg_mat
 tbg_mat_t2[tbg_mat_t2 < 2] <- 0
@@ -948,6 +920,35 @@ tbg_diagnostic_t2 %>%
   ggtitle("Total Detected Tbg Diagnostic Peptides per Patient")+
   ylab("# Peptides")+
   scale_y_continuous(limits = c(0, 30))+
+  theme_bw()+
+  theme(legend.position = "none")
+
+```
+
+
+***
+# F
+***
+
+```{r}
+# Tbr
+tbr_mat_t2 <- tbr_mat
+tbr_mat_t2[tbr_mat_t2 < 2] <- 0
+tbr_mat_t2[tbr_mat_t2 >= 2] <- 1
+
+tbr_diagnostic_t2 <- data.frame(value = rowSums(tbr_mat_t2),
+                                sample = names(rowSums(tbr_mat_t2))) %>%
+  inner_join(HATmeta, by = c("sample"))
+
+tbr_diagnostic_t2$stage <- factor(tbr_diagnostic_t2$stage, levels = c("Cn", "Cg", "Pg1", "Pg2", "Cr", "Pr1", "Pr2"))
+
+tbr_diagnostic_t2 %>% 
+  ggplot(aes(x = stage, y = value, fill = stage))+
+  geom_boxplot()+
+  scale_fill_manual(values = c("grey40","#982D80FF","#f8765cff","#FEBA80FF","#5F187FFF","#395d9cff","#3497A9FF"))+
+  ggtitle("Total Detected Tbr Diagnostic Peptides per Patient")+
+  ylab("# Peptides")+
+  scale_y_continuous(limits = c(0, 10))+
   theme_bw()+
   theme(legend.position = "none")
 
@@ -1129,33 +1130,36 @@ write_csv(as.data.frame(tbg3_metrics), file = "Tbg_MARS_perm_res.txt", col_names
 # the real model is counted as one of the permutations so add 1 to the numerator and denominator
 tbg1_metrics <- read_csv("FigureData/Permutations/Tbg_glm_perm_res.txt", col_names = F, show_col_types = F) %>% .$X1
 summary(tbg1_metrics)
-sum(tbg1_metrics >= tbg_best[[1]]$results$ROC) + 1 / (5000 + 1)
+tbg_best[[1]]$results$ROC
+sum(tbg1_metrics >= tbg_best[[1]]$results$ROC) + 1 / (1000 + 1)
 
 tbg2_metrics <- read_csv("FigureData/Permutations/Tbg_boost_perm_res.txt", col_names = F, show_col_types = F) %>% .$X1
 summary(tbg2_metrics)
-sum(tbg2_metrics >= max(tbg_best[[3]]$results$ROC)) + 1 / (5000 + 1)
+max(tbg_best[[3]]$results$ROC)
+sum(tbg2_metrics >= max(tbg_best[[3]]$results$ROC)) + 1 / (1000 + 1)
 
 tbg3_metrics <- read_csv("FigureData/Permutations/Tbg_MARS_perm_res.txt", col_names = F, show_col_types = F) %>% .$X1
 summary(tbg3_metrics)
+max(tbg_best[[10]]$results$ROC)
 sum(tbg3_metrics >= max(tbg_best[[10]]$results$ROC)) + 1 / (1000 + 1)
 
 
 plot_grid(
-  data.frame(ROC = tbg1_metrics, method = rep("GLM", 5000)) %>% 
+  data.frame(ROC = tbg1_metrics, method = rep("GLM", 1000)) %>% 
   ggplot(aes(x = ROC)) + 
   geom_histogram(fill = "#1177BB", color = "black") + 
   geom_vline(xintercept = tbg_best[[1]]$results$ROC, lty = 2, color = "red") +
   theme_bw() + 
   scale_x_continuous(limits = c(0,1)) +
   ggtitle("GLM"),
-  data.frame(ROC = tbg2_metrics, method = rep("Boost", 5000)) %>% 
+  data.frame(ROC = tbg2_metrics, method = rep("Boost", 1000)) %>% 
   ggplot(aes(x = ROC)) + 
   geom_histogram(fill = "#1177BB", color = "black") + 
   geom_vline(xintercept = max(tbg_best[[3]]$results$ROC), lty = 2, color = "red") +
   theme_bw() + 
   scale_x_continuous(limits = c(0,1)) +
   ggtitle("Boost"),
-  data.frame(ROC = tbg3_metrics, method = rep("MARS", 5000)) %>% 
+  data.frame(ROC = tbg3_metrics, method = rep("MARS", 1000)) %>% 
   ggplot(aes(x = ROC)) + 
   geom_histogram(fill = "#1177BB", color = "black") + 
   geom_vline(xintercept = max(tbg_best[[10]]$results$ROC), lty = 2, color = "red") +
@@ -1284,10 +1288,12 @@ tbr_best[[1]]$results$ROC
 
 tbr2_metrics <- read_csv("FigureData/Permutations/Tbr_boost_perm_res.txt", col_names = F, show_col_types = F) %>% .$X1
 summary(tbr2_metrics)
-(sum(tbr2_metrics >= max(tbr_best[[3]]$results$ROC)) + 1)/ (1000 + 1)
+max(tbr_best[[3]]$results$ROC)
+(sum(tbr2_metrics >= max(tbr_best[[3]]$results$ROC)) + 1)/ (1000 + 1) 
 
 tbr3_metrics <- read_csv("FigureData/Permutations/Tbr_MARS_perm_res.txt", col_names = F, show_col_types = F) %>% .$X1
 summary(tbr3_metrics)
+max(tbr_best[[6]]$results$ROC)
 (sum(tbr3_metrics >= max(tbr_best[[6]]$results$ROC)) + 1)/ (1000 + 1)
 
 
