@@ -11,7 +11,8 @@
 
 # load modules
 ml anaconda
-ml fastqc
+# all necessary packages can be installed from bioconda in a conda environment
+# trim-galore, bowtie, multiqc, samtools, and HTSeq
 conda activate PhIPseq
 
 # uncompress and quality check raw seq files
